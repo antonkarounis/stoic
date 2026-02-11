@@ -1,0 +1,4 @@
+# Ignore all files in the data directory
+# The .gitkeep file ensures the directory is tracked
+data/*
+!data/.gitkeep

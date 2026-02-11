@@ -1,0 +1,13 @@
+{{ define "title" }}Home{{ end }}
+
+{{ define "content" }}
+    {{ if eq .Email "" }}
+        <h1>Welcome</h1>
+        <p>Sign in to continue.</p>
+        <a href="/login"><button>Log in</button></a>
+    
+    {{ else }}
+        <h1>Hi {{.Email}}!</h1>
+        <a href="/u/dashboard"><button>Dashboard</button></a>
+    {{ end }}
+{{ end }}

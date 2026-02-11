@@ -1,0 +1,33 @@
+{{ define "title" }}Dashboard{{ end }}
+
+{{ define "head" }}
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+{{ end }}
+
+{{ define "nav" }}
+<li><a href="/logout">Logout</a></li>
+{{ end }}
+
+{{ define "content" }}
+<h1>Dashboard</h1>
+<article>
+    <header>User Info</header>
+    <p><strong>Email:</strong> {{.Email}}</p>
+    <p><strong>User ID:</strong> {{.UserID}}</p>
+    <p><strong>Roles:</strong></p>
+    {{if .Roles}}
+    <ul>
+        {{range .Roles}}
+        <li>{{.}}</li>
+        {{end}}
+    </ul>
+    {{else}}
+    <p><em>No roles assigned</em></p>
+    {{end}}
+</article>
+<article>
+    <header>Datetime via SSE</header>
+    <p hx-ext="sse" sse-connect="/u/events/time" sse-swap="message">&nbsp;</p>
+</article>
+{{ end }}

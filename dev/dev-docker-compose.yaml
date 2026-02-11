@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dev-db
+      POSTGRES_USER: dbuser
+      POSTGRES_PASSWORD: password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbuser -d dev-db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - balance-ai-network
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_SERVER_JSON_FILE: /pgadmin4/servers.json
+    ports:
+      - "5050:80"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+      - ./pgadmin-servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin-pgpass:/pgpass:ro
+    entrypoint: >
+      /bin/sh -c "
+      cp /pgpass /tmp/pgpass &&
+      chmod 600 /tmp/pgpass &&
+      /entrypoint.sh
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - balance-ai-network
+
+networks:
+  balance-ai-network:
+    driver: bridge
