@@ -6,9 +6,8 @@
 {{ end }}
 
 {{ define "nav" }}
-<li><a href="/logout">Logout</a></li>
+<li><a href="{{ url "logout"}}">Logout</a></li>
 {{ end }}
-
 {{ define "content" }}
 <h1>Dashboard</h1>
 <article>
@@ -28,6 +27,6 @@
 </article>
 <article>
     <header>Datetime via SSE</header>
-    <p hx-ext="sse" sse-connect="/u/events/time" sse-swap="message">&nbsp;</p>
+    <p hx-ext="sse" sse-connect="{{ url "time"}}" sse-swap="message">&nbsp;</p>
 </article>
 {{ end }}
