@@ -29,7 +29,7 @@ func Load() *Config {
 		OIDCIssuerURL:    requireEnv("OIDC_ISSUER_URL"),
 		OIDCClientID:     requireEnv("OIDC_CLIENT_ID"),
 		OIDCClientSecret: requireEnv("OIDC_CLIENT_SECRET"),
-		OIDCLogoutURL:    getEnv("OIDC_LOGOUT_URL", ""),
+		OIDCLogoutURL:    requireEnv("OIDC_LOGOUT_URL"),
 	}
 }
 

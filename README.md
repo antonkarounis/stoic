@@ -2,11 +2,13 @@
 
 A Go web app template.
 
-OIDC auth, Postgres, server-rendered HTML, SSE. Wired together in ~1200 lines of code you own. No framework. No magic. Clone it, rename it, and build on it.
+[Skip to the Quick Start](#quick-start)
 
 ## Why Stoic
 
 Modern web development is buried under layers of tooling, transpilers, bundlers, ORMs, and frameworks that do too much. Stoic takes a different approach, and minimizes what's  between you and your code.
+
+Stoic boot straps your project with OIDC auth, a Postgres data store, server-rendered HTML templates, and Server-Sent-Events (SSE) to pushed data to clients. Wired together in ~1200 lines of code you own. No framework. No magic. Clone it, rename it, and build on it.
 
 ### Why Go
 
@@ -45,12 +47,12 @@ Modern web development is buried under layers of tooling, transpilers, bundlers,
    make rename
    ```
 
-3. Start dev services (Postgres + pgAdmin):
+3. Start dev services (Postgres + pgAdmin + Keucloak):
    ```
    make dev
    ```
 
-4. Copy and fill in your config:
+4. Copy over the config (has a working example configs):
    ```
    cp .env.example .env
    ```
@@ -61,6 +63,8 @@ Modern web development is buried under layers of tooling, transpilers, bundlers,
    ```
 
 6. Open http://localhost:8080
+
+7. Log in with `dev@test.com` and `password`
 
 ## Project Structure
 

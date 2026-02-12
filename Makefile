@@ -1,4 +1,4 @@
-.PHONY: run dev setup sqlc rename help
+.PHONY: run dev stop-dev sqlc rename 
 
 ## Run the application
 run: sqlc 
@@ -7,6 +7,9 @@ run: sqlc
 ## Start dev services (Postgres, Keycloak, pgAdmin)
 dev: 
 	cd dev && docker compose -f dev-docker-compose.yaml up -d
+
+stop-dev:
+	cd dev && docker compose -f dev-docker-compose.yaml down 
 
 ## Regenerate SQLC code
 sqlc:
@@ -20,5 +23,10 @@ rename:
 	go mod edit -module $$mod; \
 	go mod tidy; \
 	echo "Done. Module renamed to $$mod"
+
+clean:
+	sudo rm -rf dev/data/postgres
+
+
 
 .DEFAULT_GOAL := run
