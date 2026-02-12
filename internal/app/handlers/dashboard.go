@@ -5,8 +5,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/gorilla/csrf"
-
 	"github.com/antonkarounis/stoic/internal/platform/auth"
 )
 
@@ -19,10 +17,9 @@ func Dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Email":     session.Email,
-		"UserID":    session.UserID,
-		"Roles":     session.Roles,
-		"CSRFField": csrf.TemplateField(r),
+		"Email":  session.Email,
+		"UserID": session.UserID,
+		"Roles":  session.Roles,
 	}
 
 	tmpl, err := manager.GetTemplate("dashboard.html", data)
