@@ -38,27 +38,27 @@ Stoic boot straps your project with OIDC auth, a Postgres data store, server-ren
 ## Quick Start
 
 1. Clone this template:
-   ```
+   ```bash
    gh repo create my-project --template antonkarounis/stoic
    ```
 
 2. Rename the module:
-   ```
+   ```bash
    make rename
    ```
 
 3. Start dev services (Postgres + pgAdmin + Keucloak):
-   ```
+   ```bash
    make dev
    ```
 
 4. Copy over the config (has a working example configs):
-   ```
+   ```bash
    cp .env.example .env
    ```
 
 5. Run:
-   ```
+   ```bash
    make run
    ```
 
