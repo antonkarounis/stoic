@@ -1,13 +1,15 @@
 package auth
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"time"
 )
 
-func Login(w http.ResponseWriter, r *http.Request) {
+func (s *AuthService) Login(w http.ResponseWriter, r *http.Request) {
 	state := GenerateState()
 
 	http.SetCookie(w, &http.Cookie{
@@ -16,15 +18,15 @@ func Login(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   300,
 		HttpOnly: true,
-		Secure:   false, // Set true for production with HTTPS
+		Secure:   !s.cfg.IsDev(),
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	url := OAuth2Config.AuthCodeURL(state)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	authURL := s.oauth2Config.AuthCodeURL(state)
+	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
 }
 
-func Callback(w http.ResponseWriter, r *http.Request) {
+func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	stateCookie, err := r.Cookie("oauth_state")
@@ -41,8 +43,9 @@ func Callback(w http.ResponseWriter, r *http.Request) {
 	})
 
 	code := r.URL.Query().Get("code")
-	token, err := OAuth2Config.Exchange(ctx, code)
+	token, err := s.oauth2Config.Exchange(ctx, code)
 	if err != nil {
+		log.Printf("Token exchange error: %v", err)
 		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
 		return
 	}
@@ -53,42 +56,59 @@ func Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idToken, err := Verifier.Verify(ctx, rawIDToken)
+	idToken, err := s.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
+		log.Printf("Token verification error: %v", err)
 		http.Error(w, "Failed to verify token", http.StatusUnauthorized)
 		return
 	}
 
-	var claims OIDCClaims
-	if err := idToken.Claims(&claims); err != nil {
+	// Extract standard claims (provider-independent)
+	var stdClaims StandardClaims
+	if err := idToken.Claims(&stdClaims); err != nil {
+		log.Printf("Claims parsing error: %v", err)
 		http.Error(w, "Failed to parse claims", http.StatusInternalServerError)
 		return
 	}
 
-	roles := claims.GetAllRoles(cfg.OIDCClientID)
-
-	displayName := claims.Name
-	if displayName == "" {
-		displayName = claims.Email
+	// Extract raw claims for provider-specific role extraction
+	var rawClaims json.RawMessage
+	if err := idToken.Claims(&rawClaims); err != nil {
+		log.Printf("Raw claims parsing error: %v", err)
+		http.Error(w, "Failed to parse claims", http.StatusInternalServerError)
+		return
 	}
 
-	userDBID, err := UpsertUser(ctx, claims.Sub, claims.Email, displayName)
+	roles, err := s.roleExtractor(rawClaims, s.cfg.OIDCClientID)
 	if err != nil {
+		log.Printf("Role extraction error: %v", err)
+		roles = nil
+	}
+
+	displayName := stdClaims.Name
+	if displayName == "" {
+		displayName = stdClaims.Email
+	}
+
+	userDBID, err := s.UpsertUser(ctx, stdClaims.Sub, stdClaims.Email, displayName)
+	if err != nil {
+		log.Printf("User upsert error: %v", err)
 		http.Error(w, "Failed to save user", http.StatusInternalServerError)
 		return
 	}
 
 	sessionID := GenerateState()
-	if err := SetSession(ctx, sessionID, &SessionData{
+	if err := s.SetSession(ctx, sessionID, &SessionData{
 		Token:       token,
 		IDToken:     rawIDToken,
-		UserID:      claims.Sub,
+		UserID:      stdClaims.Sub,
 		UserDBID:    userDBID,
-		Email:       claims.Email,
+		Email:       stdClaims.Email,
 		DisplayName: displayName,
 		Roles:       roles,
 		Expires:     time.Now().Add(24 * time.Hour),
 	}); err != nil {
+		log.Printf("Session creation error: %v", err)
 		http.Error(w, "Failed to create session", http.StatusInternalServerError)
 		return
 	}
@@ -99,22 +119,23 @@ func Callback(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400,
 		HttpOnly: true,
-		Secure:   false, // Set true for production with HTTPS
+		Secure:   !s.cfg.IsDev(),
 		SameSite: http.SameSiteLaxMode,
 	})
 
 	http.Redirect(w, r, "/u/dashboard", http.StatusTemporaryRedirect)
 }
 
-func Logout(w http.ResponseWriter, r *http.Request) {
+// Logout handles POST /logout — clears session and redirects to OIDC provider logout (if configured).
+func (s *AuthService) Logout(w http.ResponseWriter, r *http.Request) {
 	var idToken string
 
 	cookie, err := r.Cookie("session_id")
 	if err == nil {
-		if session, exists := GetSession(r.Context(), cookie.Value); exists {
+		if session, exists := s.GetSession(r.Context(), cookie.Value); exists {
 			idToken = session.IDToken
 		}
-		DeleteSession(r.Context(), cookie.Value)
+		s.DeleteSession(r.Context(), cookie.Value)
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -126,11 +147,11 @@ func Logout(w http.ResponseWriter, r *http.Request) {
 
 	// If OIDC_LOGOUT_URL is set, redirect to the provider's logout endpoint.
 	// Otherwise, just redirect to the home page.
-	if cfg.OIDCLogoutURL != "" {
+	if s.cfg.OIDCLogoutURL != "" {
 		logoutURL := fmt.Sprintf("%s?id_token_hint=%s&post_logout_redirect_uri=%s",
-			cfg.OIDCLogoutURL,
+			s.cfg.OIDCLogoutURL,
 			url.QueryEscape(idToken),
-			url.QueryEscape(cfg.AppURL))
+			url.QueryEscape(s.cfg.AppURL))
 		http.Redirect(w, r, logoutURL, http.StatusTemporaryRedirect)
 		return
 	}

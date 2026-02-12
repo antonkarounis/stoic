@@ -3,9 +3,9 @@ package app
 import (
 	"embed"
 	"fmt"
+	"html/template"
 	"io/fs"
 	"os"
-	"text/template"
 
 	"github.com/antonkarounis/stoic/internal/app/handlers"
 	"github.com/antonkarounis/stoic/internal/platform/auth"
@@ -20,20 +20,20 @@ var embeddedFS embed.FS
 
 // RegisterRoutes sets up all application routes.
 // Edit this file to add your pages and API endpoints.
-func RegisterRoutes(r *mux.Router, cfg *config.Config) {
+func RegisterRoutes(r *mux.Router, cfg *config.Config, authService *auth.AuthService) {
 	initTemplates(cfg, r)
 
 	// Public routes
 	r.HandleFunc("/", handlers.Home).Methods("GET").Name("index")
 
 	// Auth routes (provided by platform)
-	r.HandleFunc("/login", auth.Login).Methods("GET").Name("login")
-	r.HandleFunc("/callback", auth.Callback).Methods("GET")
-	r.HandleFunc("/logout", auth.Logout).Methods("GET").Name("logout")
+	r.HandleFunc("/login", authService.Login).Methods("GET").Name("login")
+	r.HandleFunc("/callback", authService.Callback).Methods("GET")
+	r.HandleFunc("/logout", authService.Logout).Methods("POST").Name("logout")
 
 	// Authenticated routes
 	u := r.PathPrefix("/u").Subrouter()
-	u.Use(auth.RequireAuth)
+	u.Use(authService.RequireAuth)
 	u.HandleFunc("/dashboard", handlers.Dashboard).Methods("GET").Name("dashboard")
 	u.HandleFunc("/events/time", handlers.SSE()).Methods("GET").Name("time")
 
@@ -41,12 +41,10 @@ func RegisterRoutes(r *mux.Router, cfg *config.Config) {
 }
 
 func initTemplates(cfg *config.Config, r *mux.Router) {
-	dev := cfg.Environment == "dev"
-
 	var f fs.FS
 	var reload bool
 
-	if dev {
+	if cfg.IsDev() {
 		fmt.Println("WARNING: dev mode")
 		f = os.DirFS("internal/app")
 		reload = true
@@ -73,12 +71,18 @@ func initTemplates(cfg *config.Config, r *mux.Router) {
 	handlers.Init(manager)
 }
 
-func makeURLFunc(router *mux.Router) func(string, ...string) string {
-	return func(name string, pairs ...string) string {
-		url, err := router.Get(name).URL(pairs...)
-		if err != nil {
-			panic(fmt.Errorf("URL generation error for route '%s': %v", name, err))
+// makeURLFunc returns a template function that generates URLs from route names.
+// Returns an error (which stops template execution) instead of panicking at render time.
+func makeURLFunc(router *mux.Router) func(string, ...string) (string, error) {
+	return func(name string, pairs ...string) (string, error) {
+		route := router.Get(name)
+		if route == nil {
+			return "", fmt.Errorf("URL generation error: route '%s' not found", name)
 		}
-		return url.Path
+		url, err := route.URL(pairs...)
+		if err != nil {
+			return "", fmt.Errorf("URL generation error for route '%s': %v", name, err)
+		}
+		return url.Path, nil
 	}
 }

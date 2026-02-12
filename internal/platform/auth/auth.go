@@ -17,28 +17,20 @@ import (
 	"github.com/antonkarounis/stoic/internal/platform/db/gen"
 )
 
-/*
-	Keycloak setup example:
+// AuthService encapsulates all authentication state and operations.
+type AuthService struct {
+	provider      *oidc.Provider
+	oauth2Config  oauth2.Config
+	verifier      *oidc.IDTokenVerifier
+	queries       *gen.Queries
+	cfg           *config.Config
+	roleExtractor RoleExtractor
+}
 
-    	Click "Clients" -> click on "Create client"
-		Client authentication - on
-		Standard flow - on
-		All others - off
-
-	Click "Client scopes" -> click on "roles"
-		Include in token scope - on
-
-	For other OIDC providers (Auth0, Okta, etc.), configure a
-	standard Authorization Code Flow with the scopes: openid, profile, email.
-*/
-
-var (
-	provider     *oidc.Provider
-	OAuth2Config oauth2.Config
-	Verifier     *oidc.IDTokenVerifier
-	queries      *gen.Queries
-	cfg          *config.Config
-)
+// RoleExtractor extracts roles from raw OIDC claims.
+// The default implementation handles Keycloak realm_access and resource_access claims.
+// Replace with a custom function for other OIDC providers (Auth0, Okta, etc.).
+type RoleExtractor func(rawClaims json.RawMessage, clientID string) ([]string, error)
 
 type SessionData struct {
 	Token       *oauth2.Token
@@ -51,23 +43,11 @@ type SessionData struct {
 	Expires     time.Time
 }
 
-// OIDCClaims represents the JWT claims from an OIDC provider.
-// The JSON structure is Keycloak-compatible (realm_access, resource_access).
-// Role extraction assumes Keycloak claim structure. Modify GetAllRoles() for other providers.
-type OIDCClaims struct {
-	Sub            string         `json:"sub"`
-	Email          string         `json:"email"`
-	Name           string         `json:"name"`
-	RealmAccess    RealmAccess    `json:"realm_access"`
-	ResourceAccess ResourceAccess `json:"resource_access"`
-}
-
-type RealmAccess struct {
-	Roles []string `json:"roles"`
-}
-
-type ResourceAccess map[string]struct {
-	Roles []string `json:"roles"`
+// StandardClaims are the provider-independent OIDC claims (sub, email, name).
+type StandardClaims struct {
+	Sub   string `json:"sub"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
 }
 
 // tokenData is the JSON-serializable representation stored in sessions.token_data
@@ -77,6 +57,72 @@ type tokenData struct {
 	RefreshToken string    `json:"refresh_token"`
 	Expiry       time.Time `json:"expiry"`
 	Roles        []string  `json:"roles"`
+}
+
+func NewAuthService(ctx context.Context, cfg *config.Config, queries *gen.Queries) (*AuthService, error) {
+	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+	}
+
+	oauth2Config := oauth2.Config{
+		ClientID:     cfg.OIDCClientID,
+		ClientSecret: cfg.OIDCClientSecret,
+		RedirectURL:  cfg.AppURL + "/callback",
+		Endpoint:     provider.Endpoint(),
+		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
+	}
+
+	verifier := provider.Verifier(&oidc.Config{
+		ClientID: cfg.OIDCClientID,
+	})
+
+	return &AuthService{
+		provider:      provider,
+		oauth2Config:  oauth2Config,
+		verifier:      verifier,
+		queries:       queries,
+		cfg:           cfg,
+		roleExtractor: KeycloakRoleExtractor,
+	}, nil
+}
+
+// KeycloakRoleExtractor extracts roles from Keycloak-specific claims (realm_access, resource_access).
+// For other OIDC providers, replace AuthService.roleExtractor with a custom function.
+func KeycloakRoleExtractor(rawClaims json.RawMessage, clientID string) ([]string, error) {
+	var claims struct {
+		RealmAccess    struct{ Roles []string `json:"roles"` } `json:"realm_access"`
+		ResourceAccess map[string]struct{ Roles []string `json:"roles"` } `json:"resource_access"`
+	}
+	if err := json.Unmarshal(rawClaims, &claims); err != nil {
+		return nil, fmt.Errorf("parsing role claims: %w", err)
+	}
+
+	var allRoles []string
+	allRoles = append(allRoles, claims.RealmAccess.Roles...)
+	if clientRoles, ok := claims.ResourceAccess[clientID]; ok {
+		allRoles = append(allRoles, clientRoles.Roles...)
+	}
+
+	// Filter out default Keycloak roles
+	roles := make([]string, 0, len(allRoles))
+	for _, role := range allRoles {
+		if !isDefaultKeycloakRole(role) {
+			roles = append(roles, role)
+		}
+	}
+	return roles, nil
+}
+
+func isDefaultKeycloakRole(role string) bool {
+	if strings.HasPrefix(role, "default-roles-") {
+		return true
+	}
+	switch role {
+	case "offline_access", "uma_authorization":
+		return true
+	}
+	return false
 }
 
 func tokenToJSON(token *oauth2.Token, roles []string) ([]byte, error) {
@@ -104,64 +150,22 @@ func tokenFromJSON(data []byte) (*oauth2.Token, []string, error) {
 	return token, td.Roles, nil
 }
 
-// GetAllRoles returns combined realm and client roles, filtering out default Keycloak roles.
-// For non-Keycloak providers, modify this method to extract roles from your provider's claim structure.
-func (c *OIDCClaims) GetAllRoles(clientID string) []string {
-	allRoles := make([]string, 0)
-	allRoles = append(allRoles, c.RealmAccess.Roles...)
-	if clientRoles, ok := c.ResourceAccess[clientID]; ok {
-		allRoles = append(allRoles, clientRoles.Roles...)
-	}
-
-	// Filter out default Keycloak roles
-	roles := make([]string, 0)
-	for _, role := range allRoles {
-		if isDefaultRole(role) {
-			continue
-		}
-		roles = append(roles, role)
-	}
-	return roles
-}
-
-func isDefaultRole(role string) bool {
-	if strings.HasPrefix(role, "default-roles-") {
-		return true
-	}
-	switch role {
-	case "offline_access", "uma_authorization":
-		return true
-	}
-	return false
-}
-
-func Init(ctx context.Context, c *config.Config) error {
-	cfg = c
-
-	var err error
-	provider, err = oidc.NewProvider(ctx, cfg.OIDCIssuerURL)
+// encryptToken serializes and encrypts token data for storage.
+func (s *AuthService) encryptToken(token *oauth2.Token, roles []string) ([]byte, error) {
+	plaintext, err := tokenToJSON(token, roles)
 	if err != nil {
-		return fmt.Errorf("failed to create OIDC provider: %w", err)
+		return nil, fmt.Errorf("marshaling token data: %w", err)
 	}
-
-	OAuth2Config = oauth2.Config{
-		ClientID:     cfg.OIDCClientID,
-		ClientSecret: cfg.OIDCClientSecret,
-		RedirectURL:  cfg.AppURL + "/callback",
-		Endpoint:     provider.Endpoint(),
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
-	}
-
-	Verifier = provider.Verifier(&oidc.Config{
-		ClientID: cfg.OIDCClientID,
-	})
-
-	return nil
+	return encrypt(plaintext, s.cfg.SecretKey)
 }
 
-// InitDB sets the database queries instance for session and user operations.
-func InitDB(q *gen.Queries) {
-	queries = q
+// decryptToken decrypts and deserializes token data from storage.
+func (s *AuthService) decryptToken(data []byte) (*oauth2.Token, []string, error) {
+	plaintext, err := decrypt(data, s.cfg.SecretKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decrypting token data: %w", err)
+	}
+	return tokenFromJSON(plaintext)
 }
 
 func GenerateState() string {
@@ -170,18 +174,18 @@ func GenerateState() string {
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func GetSession(ctx context.Context, sessionID string) (*SessionData, bool) {
-	dbSession, err := queries.GetSession(ctx, sessionID)
+func (s *AuthService) GetSession(ctx context.Context, sessionID string) (*SessionData, bool) {
+	dbSession, err := s.queries.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, false
 	}
 
-	token, roles, err := tokenFromJSON(dbSession.TokenData)
+	token, roles, err := s.decryptToken(dbSession.TokenData)
 	if err != nil {
 		return nil, false
 	}
 
-	user, err := queries.GetUserByID(ctx, dbSession.UserID)
+	user, err := s.queries.GetUserByID(ctx, dbSession.UserID)
 	if err != nil {
 		return nil, false
 	}
@@ -198,50 +202,50 @@ func GetSession(ctx context.Context, sessionID string) (*SessionData, bool) {
 	}, true
 }
 
-func SetSession(ctx context.Context, sessionID string, session *SessionData) error {
-	tokenJSON, err := tokenToJSON(session.Token, session.Roles)
+func (s *AuthService) SetSession(ctx context.Context, sessionID string, session *SessionData) error {
+	tokenEncrypted, err := s.encryptToken(session.Token, session.Roles)
 	if err != nil {
-		return fmt.Errorf("marshaling token data: %w", err)
+		return fmt.Errorf("encrypting token data: %w", err)
 	}
 
-	return queries.CreateSession(ctx, gen.CreateSessionParams{
+	return s.queries.CreateSession(ctx, gen.CreateSessionParams{
 		SessionID: sessionID,
 		UserID:    session.UserDBID,
-		TokenData: tokenJSON,
+		TokenData: tokenEncrypted,
 		IDToken:   session.IDToken,
 		ExpiresAt: pgtype.Timestamptz{Time: session.Expires, Valid: true},
 	})
 }
 
-func DeleteSession(ctx context.Context, sessionID string) {
-	_ = queries.DeleteSession(ctx, sessionID)
+func (s *AuthService) DeleteSession(ctx context.Context, sessionID string) {
+	_ = s.queries.DeleteSession(ctx, sessionID)
 }
 
-func RefreshToken(ctx context.Context, sessionID string, session *SessionData) error {
+func (s *AuthService) RefreshToken(ctx context.Context, sessionID string, session *SessionData) error {
 	if session.Token.Expiry.After(time.Now()) {
 		return nil
 	}
 
-	tokenSource := OAuth2Config.TokenSource(ctx, session.Token)
+	tokenSource := s.oauth2Config.TokenSource(ctx, session.Token)
 	newToken, err := tokenSource.Token()
 	if err != nil {
 		return err
 	}
 	session.Token = newToken
 
-	tokenJSON, err := tokenToJSON(newToken, session.Roles)
+	tokenEncrypted, err := s.encryptToken(newToken, session.Roles)
 	if err != nil {
-		return fmt.Errorf("marshaling refreshed token: %w", err)
+		return fmt.Errorf("encrypting refreshed token: %w", err)
 	}
-	return queries.UpdateSessionToken(ctx, gen.UpdateSessionTokenParams{
+	return s.queries.UpdateSessionToken(ctx, gen.UpdateSessionTokenParams{
 		SessionID: sessionID,
-		TokenData: tokenJSON,
+		TokenData: tokenEncrypted,
 	})
 }
 
 // UpsertUser creates or updates a user record and returns the database ID.
-func UpsertUser(ctx context.Context, authSub, email, displayName string) (int64, error) {
-	user, err := queries.UpsertUser(ctx, gen.UpsertUserParams{
+func (s *AuthService) UpsertUser(ctx context.Context, authSub, email, displayName string) (int64, error) {
+	user, err := s.queries.UpsertUser(ctx, gen.UpsertUserParams{
 		AuthSub:     authSub,
 		Email:       email,
 		DisplayName: displayName,

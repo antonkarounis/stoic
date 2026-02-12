@@ -10,13 +10,28 @@ import (
 
 func SSE() http.HandlerFunc {
 	return web.ConfigureSSE(func(ctx context.Context, messageChan chan string) {
-		messageChan <- generateTime()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 
-		go func() {
-			for range time.NewTicker(time.Second).C {
-				messageChan <- generateTime()
+		// Send initial time
+		select {
+		case messageChan <- generateTime():
+		case <-ctx.Done():
+			return
+		}
+
+		for {
+			select {
+			case <-ticker.C:
+				select {
+				case messageChan <- generateTime():
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
 			}
-		}()
+		}
 	})
 }
 

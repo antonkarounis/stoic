@@ -6,7 +6,12 @@
 {{ end }}
 
 {{ define "nav" }}
-<li><a href="{{ url "logout"}}">Logout</a></li>
+<li>
+    <form method="POST" action="{{ url "logout" }}" style="margin:0">
+        {{ .CSRFField }}
+        <button type="submit" class="secondary outline" style="margin:0;padding:0.25rem 0.75rem;border:none">Logout</button>
+    </form>
+</li>
 {{ end }}
 {{ define "content" }}
 <h1>Dashboard</h1>

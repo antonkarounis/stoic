@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"bytes"
+	"log"
 	"net/http"
+
+	"github.com/gorilla/csrf"
 
 	"github.com/antonkarounis/stoic/internal/platform/auth"
 )
@@ -9,22 +13,31 @@ import (
 func Dashboard(w http.ResponseWriter, r *http.Request) {
 	session, err := auth.GetSessionFromContext(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Session context error: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	data := map[string]interface{}{
-		"Email":  session.Email,
-		"UserID": session.UserID,
-		"Roles":  session.Roles,
+		"Email":     session.Email,
+		"UserID":    session.UserID,
+		"Roles":     session.Roles,
+		"CSRFField": csrf.TemplateField(r),
 	}
 
-	template, err := manager.GetTemplate("dashboard.html", data)
-
+	tmpl, err := manager.GetTemplate("dashboard.html", data)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("Template error: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	template.ExecuteTemplate(w, "base.html", data)
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "base.html", data); err != nil {
+		log.Printf("Template execution error: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	buf.WriteTo(w)
 }
+
