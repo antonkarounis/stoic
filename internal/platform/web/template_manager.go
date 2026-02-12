@@ -173,13 +173,7 @@ func (tm *TemplateManager) getExecutor(templatePath string, exampleModel any) (*
 		return nil, errors.New("couldn't find template: " + templatePath)
 	}
 
-	// Validate against "content" block if it exists (where data fields are used),
-	// otherwise validate against the page template itself
-	validateTarget := templatePath
-	if usesBaseLayout(tmpl) {
-		validateTarget = "content"
-	}
-	if err := validateViewModel(exampleModel, tmpl, validateTarget); err != nil {
+	if err := validateViewModelAllBlocks(exampleModel, tmpl, templatePath); err != nil {
 		return nil, fmt.Errorf("couldn't validate view model for [%v]: %v", templatePath, err.Error())
 	}
 
@@ -205,13 +199,7 @@ func (tm *TemplateManager) GetTemplate(templatePath string, exampleModel any) (*
 		return nil, errors.New("couldn't find template: " + templatePath)
 	}
 
-	// Validate against "content" block if it exists (where data fields are used),
-	// otherwise validate against the page template itself
-	validateTarget := templatePath
-	if usesBaseLayout(tmpl) {
-		validateTarget = "content"
-	}
-	if err := validateViewModel(exampleModel, tmpl, validateTarget); err != nil {
+	if err := validateViewModelAllBlocks(exampleModel, tmpl, templatePath); err != nil {
 		return nil, fmt.Errorf("couldn't validate view model for [%v]: %v", templatePath, err.Error())
 	}
 
@@ -283,6 +271,48 @@ func (te *TemplateExecutor) ExecuteToWriter(writer io.Writer, data any) error {
 	}
 
 	return nil
+}
+
+// validateViewModelAllBlocks validates the data model against all blocks defined by the page template.
+// This catches fields used in any block (content, nav, head, title, etc.), not just "content".
+func validateViewModelAllBlocks(data interface{}, tmpl *template.Template, templatePath string) error {
+	// Collect all block names defined by this page template
+	blockNames := []string{templatePath}
+	knownBlocks := []string{"content", "nav", "head", "title"}
+	for _, name := range knownBlocks {
+		if t := tmpl.Lookup(name); t != nil {
+			blockNames = append(blockNames, name)
+		}
+	}
+
+	// Extract fields used across all blocks
+	rootTemplateField := newTemplateField("Root")
+	for _, name := range blockNames {
+		block := tmpl.Lookup(name)
+		if block != nil && block.Tree != nil {
+			extractFieldsFromTemplate(tmpl, block.Tree.Root, rootTemplateField)
+		}
+	}
+
+	rootStructField := extractFieldsFromData(data)
+	missing, extra := compareTemplateFields(rootTemplateField, rootStructField)
+
+	if len(extra) == 0 && len(missing) == 0 {
+		return nil
+	}
+
+	var sb strings.Builder
+	if len(extra) > 0 {
+		sb.WriteString("extra fields [")
+		sb.WriteString(strings.Join(extra, ", "))
+		sb.WriteString("] ")
+	}
+	if len(missing) > 0 {
+		sb.WriteString("missing fields [")
+		sb.WriteString(strings.Join(missing, ", "))
+		sb.WriteString("]")
+	}
+	return errors.New(sb.String())
 }
 
 func validateViewModel(data interface{}, tmpl *template.Template, templateName string) error {

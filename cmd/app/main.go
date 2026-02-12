@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"net/url"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -78,12 +79,19 @@ func main() {
 		return gorillaHandlers.LoggingHandler(os.Stdout, next)
 	})
 	r.Use(gorillaHandlers.RecoveryHandler())
-	r.Use(csrf.Protect(
-		cfg.SecretKey,
+	csrfOpts := []csrf.Option{
 		csrf.Secure(!cfg.IsDev()),
 		csrf.Path("/"),
 		csrf.SameSite(csrf.SameSiteLaxMode),
-	))
+	}
+	// In dev (plain HTTP), gorilla/csrf assumes HTTPS and rejects the http:// Origin header.
+	// Add the app host as a trusted origin to fix this.
+	if cfg.IsDev() {
+		if parsed, err := url.Parse(cfg.AppURL); err == nil {
+			csrfOpts = append(csrfOpts, csrf.TrustedOrigins([]string{parsed.Host}))
+		}
+	}
+	r.Use(csrf.Protect(cfg.SecretKey, csrfOpts...))
 	r.Use(authService.OptionalAuth)
 
 	// Register application routes

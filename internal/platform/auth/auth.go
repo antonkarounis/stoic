@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -60,9 +61,9 @@ type tokenData struct {
 }
 
 func NewAuthService(ctx context.Context, cfg *config.Config, queries *gen.Queries) (*AuthService, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuerURL)
+	provider, err := connectOIDCProvider(ctx, cfg.OIDCIssuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
+		return nil, err
 	}
 
 	oauth2Config := oauth2.Config{
@@ -91,8 +92,12 @@ func NewAuthService(ctx context.Context, cfg *config.Config, queries *gen.Querie
 // For other OIDC providers, replace AuthService.roleExtractor with a custom function.
 func KeycloakRoleExtractor(rawClaims json.RawMessage, clientID string) ([]string, error) {
 	var claims struct {
-		RealmAccess    struct{ Roles []string `json:"roles"` } `json:"realm_access"`
-		ResourceAccess map[string]struct{ Roles []string `json:"roles"` } `json:"resource_access"`
+		RealmAccess struct {
+			Roles []string `json:"roles"`
+		} `json:"realm_access"`
+		ResourceAccess map[string]struct {
+			Roles []string `json:"roles"`
+		} `json:"resource_access"`
 	}
 	if err := json.Unmarshal(rawClaims, &claims); err != nil {
 		return nil, fmt.Errorf("parsing role claims: %w", err)
@@ -151,21 +156,70 @@ func tokenFromJSON(data []byte) (*oauth2.Token, []string, error) {
 }
 
 // encryptToken serializes and encrypts token data for storage.
+// Returns a JSON-safe base64-encoded string (compatible with JSONB columns).
 func (s *AuthService) encryptToken(token *oauth2.Token, roles []string) ([]byte, error) {
 	plaintext, err := tokenToJSON(token, roles)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling token data: %w", err)
 	}
-	return encrypt(plaintext, s.cfg.SecretKey)
+	ciphertext, err := encrypt(plaintext, s.cfg.SecretKey)
+	if err != nil {
+		return nil, err
+	}
+	encoded := base64.StdEncoding.EncodeToString(ciphertext)
+	// Wrap in JSON string so it's valid for JSONB storage
+	return json.Marshal(encoded)
 }
 
 // decryptToken decrypts and deserializes token data from storage.
 func (s *AuthService) decryptToken(data []byte) (*oauth2.Token, []string, error) {
-	plaintext, err := decrypt(data, s.cfg.SecretKey)
+	// Unwrap JSON string
+	var encoded string
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return nil, nil, fmt.Errorf("unmarshaling encrypted envelope: %w", err)
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decoding base64 ciphertext: %w", err)
+	}
+	plaintext, err := decrypt(ciphertext, s.cfg.SecretKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decrypting token data: %w", err)
 	}
 	return tokenFromJSON(plaintext)
+}
+
+// connectOIDCProvider attempts to connect to the OIDC provider, retrying for up to 3 minutes.
+func connectOIDCProvider(ctx context.Context, issuerURL string) (*oidc.Provider, error) {
+	const maxWait = 3 * time.Minute
+	const retryInterval = 2 * time.Second
+
+	deadline := time.Now().Add(maxWait)
+	var lastErr error
+
+	for {
+		provider, err := oidc.NewProvider(ctx, issuerURL)
+		if err == nil {
+			return provider, nil
+		}
+		lastErr = err
+
+		if time.Now().After(deadline) {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+
+		log.Printf("OIDC provider not ready, retrying in %s...", retryInterval)
+		select {
+		case <-time.After(retryInterval):
+		case <-ctx.Done():
+			return nil, fmt.Errorf("context cancelled waiting for OIDC provider: %w", ctx.Err())
+		}
+	}
+
+	return nil, fmt.Errorf("failed to connect to OIDC provider after %s: %w", maxWait, lastErr)
 }
 
 func GenerateState() string {

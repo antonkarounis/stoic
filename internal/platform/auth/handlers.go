@@ -2,7 +2,6 @@ package auth
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -126,14 +125,12 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/u/dashboard", http.StatusTemporaryRedirect)
 }
 
-// Logout handles POST /logout — clears session and redirects to OIDC provider logout (if configured).
+// Logout handles POST /logout — revokes the OIDC session via backchannel and redirects home.
 func (s *AuthService) Logout(w http.ResponseWriter, r *http.Request) {
-	var idToken string
-
 	cookie, err := r.Cookie("session_id")
 	if err == nil {
 		if session, exists := s.GetSession(r.Context(), cookie.Value); exists {
-			idToken = session.IDToken
+			s.revokeOIDCSession(session)
 		}
 		s.DeleteSession(r.Context(), cookie.Value)
 	}
@@ -145,16 +142,25 @@ func (s *AuthService) Logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge: -1,
 	})
 
-	// If OIDC_LOGOUT_URL is set, redirect to the provider's logout endpoint.
-	// Otherwise, just redirect to the home page.
-	if s.cfg.OIDCLogoutURL != "" {
-		logoutURL := fmt.Sprintf("%s?id_token_hint=%s&post_logout_redirect_uri=%s",
-			s.cfg.OIDCLogoutURL,
-			url.QueryEscape(idToken),
-			url.QueryEscape(s.cfg.AppURL))
-		http.Redirect(w, r, logoutURL, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// revokeOIDCSession performs a backchannel logout by POSTing the refresh token
+// to the OIDC provider's logout endpoint. This avoids the provider's
+// "Do you want to log out?" confirmation page that appears when the id_token_hint is expired.
+func (s *AuthService) revokeOIDCSession(session *SessionData) {
+	if s.cfg.OIDCLogoutURL == "" || session.Token == nil || session.Token.RefreshToken == "" {
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
+	resp, err := http.PostForm(s.cfg.OIDCLogoutURL, url.Values{
+		"client_id":     {s.cfg.OIDCClientID},
+		"client_secret": {s.cfg.OIDCClientSecret},
+		"refresh_token": {session.Token.RefreshToken},
+	})
+	if err != nil {
+		log.Printf("OIDC backchannel logout request failed: %v", err)
+		return
+	}
+	resp.Body.Close()
 }

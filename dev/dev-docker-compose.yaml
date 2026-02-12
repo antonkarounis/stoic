@@ -1,7 +1,7 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: postgres15
+    container_name: stoic-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: dev-db
@@ -19,11 +19,11 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - balance-ai-network
+      - stoic-dev-network
 
   pgadmin:
     image: dpage/pgadmin4
-    container_name: pgadmin
+    container_name: stoic-pgadmin
     restart: unless-stopped
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
@@ -46,11 +46,11 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - balance-ai-network
+      - stoic-dev-network
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
-    container_name: keycloak
+    container_name: stoic-keycloak
     restart: unless-stopped
     command: start-dev --import-realm
     environment:
@@ -72,8 +72,8 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - balance-ai-network
+      - stoic-dev-network
 
 networks:
-  balance-ai-network:
+  stoic-dev-network:
     driver: bridge
