@@ -1,4 +1,4 @@
-.PHONY: run dev-start dev-stop sqlc rename setup air
+.PHONY: run dev-start dev-stop sqlc rename setup clean
 
 ## Install dev dependencies
 setup:
@@ -32,7 +32,6 @@ rename:
 
 clean:
 	sudo rm -rf dev/data/postgres
-
-
+	sudo rm -rf dev/data/app
 
 .DEFAULT_GOAL := run
