@@ -49,7 +49,7 @@ Stoic boot straps your project with OIDC auth, a Postgres data store, server-ren
 
 3. Start dev services (Postgres + pgAdmin + Keycloak):
    ```bash
-   make dev
+   make dev-start
    ```
 
 4. Copy over the config (has a working example configs):
