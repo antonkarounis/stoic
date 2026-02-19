@@ -10,6 +10,7 @@ require (
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/oauth2 v0.34.0
+    github.com/air-verse/air v1.64.5
 )
 
 require (

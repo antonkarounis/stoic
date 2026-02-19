@@ -1,14 +1,20 @@
-.PHONY: run dev stop-dev sqlc rename 
+.PHONY: run dev-start dev-stop sqlc rename setup air
+
+## Install dev dependencies
+setup:
+	go install github.com/air-verse/air@latest
+
 
 ## Run the application
-run: sqlc 
-	go run cmd/app/main.go
+run: setup sqlc
+	air
+# go run cmd/app/main.go
 
 ## Start dev services (Postgres, Keycloak, pgAdmin)
-dev: 
+dev-start:
 	cd dev && docker compose -f dev-docker-compose.yaml up -d
 
-stop-dev:
+dev-stop:
 	cd dev && docker compose -f dev-docker-compose.yaml down 
 
 ## Regenerate SQLC code
