@@ -17,7 +17,7 @@ import (
 
 const defaultBaseTemplate = "base.html"
 
-type TemplateManagerOptions struct {
+type TemplateRegistryOptions struct {
 	FS           fs.FS          // required: the filesystem to load templates from
 	RootDir      string         // directory within FS containing page templates
 	IncludeDir   string         // directory within FS containing shared includes
@@ -26,16 +26,14 @@ type TemplateManagerOptions struct {
 	Reload       bool           // when true, reload templates on each request
 }
 
-// -----------------------------------
-
-type TemplateManager struct {
+type TemplateRegistry struct {
 	storedTemplates map[string]*template.Template
 	baseExists      bool
-	options         TemplateManagerOptions
+	options         TemplateRegistryOptions
 	mu              sync.RWMutex // protects storedTemplates during reload
 }
 
-func NewTemplateManager(options TemplateManagerOptions) (*TemplateManager, error) {
+func NewTemplateRegistry(options TemplateRegistryOptions) (*TemplateRegistry, error) {
 	if options.FS == nil {
 		return nil, errors.New("FS is required")
 	}
@@ -46,7 +44,7 @@ func NewTemplateManager(options TemplateManagerOptions) (*TemplateManager, error
 		options.BaseTemplate = defaultBaseTemplate
 	}
 
-	tm := &TemplateManager{
+	tm := &TemplateRegistry{
 		options: options,
 	}
 
@@ -56,7 +54,7 @@ func NewTemplateManager(options TemplateManagerOptions) (*TemplateManager, error
 	return tm, nil
 }
 
-func (tm *TemplateManager) loadTemplates() error {
+func (tm *TemplateRegistry) loadTemplates() error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -140,8 +138,8 @@ func relPath(base, target string) (string, error) {
 	return rel, nil
 }
 
-// getTemplateForExecution returns the template, reloading all templates first if Reload is enabled
-func (tm *TemplateManager) getTemplateForExecution(templatePath string) (*template.Template, error) {
+// getTemplateToRender returns the template, reloading all templates first if Reload is enabled
+func (tm *TemplateRegistry) getTemplateToRender(templatePath string) (*template.Template, error) {
 	if tm.options.Reload {
 		if err := tm.loadTemplates(); err != nil {
 			return nil, fmt.Errorf("reloading templates: %w", err)
@@ -164,7 +162,7 @@ func usesBaseLayout(tmpl *template.Template) bool {
 	return tmpl.Lookup("content") != nil
 }
 
-func (tm *TemplateManager) getExecutor(templatePath string, exampleModel any) (*TemplateExecutor, error) {
+func (tm *TemplateRegistry) getRenderer(templatePath string, exampleModel any) (*TemplateRenderer, error) {
 	tm.mu.RLock()
 	tmpl := tm.storedTemplates[templatePath]
 	tm.mu.RUnlock()
@@ -177,14 +175,14 @@ func (tm *TemplateManager) getExecutor(templatePath string, exampleModel any) (*
 		return nil, fmt.Errorf("couldn't validate view model for [%v]: %v", templatePath, err.Error())
 	}
 
-	return &TemplateExecutor{
-		manager:          tm,
+	return &TemplateRenderer{
+		registry:         tm,
 		templateName:     templatePath,
 		baseTemplateName: tm.options.BaseTemplate,
 	}, nil
 }
 
-func (tm *TemplateManager) GetTemplate(templatePath string, exampleModel any) (*template.Template, error) {
+func (tm *TemplateRegistry) GetTemplate(templatePath string, exampleModel any) (*template.Template, error) {
 	if tm.options.Reload {
 		if err := tm.loadTemplates(); err != nil {
 			return nil, fmt.Errorf("reloading templates: %w", err)
@@ -206,63 +204,45 @@ func (tm *TemplateManager) GetTemplate(templatePath string, exampleModel any) (*
 	return tmpl, nil
 }
 
-func (tm *TemplateManager) TemplateRoute(
-	templatePath string,
-	exampleModel any,
-	fn func(w http.ResponseWriter, r *http.Request, tmpl *template.Template),
-) func(w http.ResponseWriter, r *http.Request) {
-	tmpl, err := tm.GetTemplate(templatePath, exampleModel)
+type TemplateHandler func(http.ResponseWriter, *http.Request, *TemplateRenderer)
+
+func (tm *TemplateRegistry) BuildHandler(templatePath string, exampleModel any, fn TemplateHandler) http.HandlerFunc {
+	renderer, err := tm.getRenderer(templatePath, exampleModel)
 	if err != nil {
 		panic(err)
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		fn(w, r, tmpl)
-	}
-}
-
-func (tm *TemplateManager) ExecutorRoute(
-	templatePath string,
-	exampleModel any,
-	fn func(w http.ResponseWriter, r *http.Request, te *TemplateExecutor),
-) func(w http.ResponseWriter, r *http.Request) {
-
-	executor, err := tm.getExecutor(templatePath, exampleModel)
-	if err != nil {
-		panic(err)
-	}
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		fn(w, r, executor)
+		fn(w, r, renderer)
 	}
 }
 
 // -----------------------------------
 
-type TemplateExecutor struct {
-	manager          *TemplateManager
+type TemplateRenderer struct {
+	registry         *TemplateRegistry
 	templateName     string
 	baseTemplateName string
 }
 
-func (te *TemplateExecutor) ExecuteToString(data any) (string, error) {
+func (te *TemplateRenderer) String(data any) (string, error) {
 	var buffer bytes.Buffer
-	if err := te.ExecuteToWriter(&buffer, data); err != nil {
+	if err := te.WriteTo(&buffer, data); err != nil {
 		return "", err
 	}
 	return buffer.String(), nil
 }
 
-func (te *TemplateExecutor) ExecuteToWriter(writer io.Writer, data any) error {
-	tmpl, err := te.manager.getTemplateForExecution(te.templateName)
+func (te *TemplateRenderer) WriteTo(writer io.Writer, data any) error {
+	tmpl, err := te.registry.getTemplateToRender(te.templateName)
 	if err != nil {
 		return err
 	}
 
-	// If template defines "content" block, execute via base layout
-	// Otherwise execute the page template directly
+	// If template defines "content" block, render via base layout
+	// Otherwise render the page template directly
 	execName := te.templateName
-	if usesBaseLayout(tmpl) && te.manager.baseExists {
+	if usesBaseLayout(tmpl) && te.registry.baseExists {
 		execName = te.baseTemplateName
 	}
 
@@ -297,26 +277,6 @@ func validateViewModelAllBlocks(data interface{}, tmpl *template.Template, templ
 	rootStructField := extractFieldsFromData(data)
 	missing, extra := compareTemplateFields(rootTemplateField, rootStructField)
 
-	if len(extra) == 0 && len(missing) == 0 {
-		return nil
-	}
-
-	var sb strings.Builder
-	if len(extra) > 0 {
-		sb.WriteString("extra fields [")
-		sb.WriteString(strings.Join(extra, ", "))
-		sb.WriteString("] ")
-	}
-	if len(missing) > 0 {
-		sb.WriteString("missing fields [")
-		sb.WriteString(strings.Join(missing, ", "))
-		sb.WriteString("]")
-	}
-	return errors.New(sb.String())
-}
-
-func validateViewModel(data interface{}, tmpl *template.Template, templateName string) error {
-	missing, extra := compareViewModel(data, tmpl, templateName)
 	if len(extra) == 0 && len(missing) == 0 {
 		return nil
 	}
@@ -481,22 +441,6 @@ func extractFieldHelper(typ reflect.Type, parentField *templateField) {
 			extractFieldHelper(field.Type, child)
 		}
 	}
-}
-
-func compareViewModel(data interface{}, tmpl *template.Template, templateName string) (missing []string, extra []string) {
-	// Extract fields from the template
-	rootTemplateField := newTemplateField("Root")
-	tmplTree := tmpl.Lookup(templateName)
-	if tmplTree == nil || tmplTree.Tree == nil {
-		panic(fmt.Sprintf("template %q not found", templateName))
-	}
-	extractFieldsFromTemplate(tmpl, tmplTree.Tree.Root, rootTemplateField)
-
-	// Extract fields from the struct
-	rootStructField := extractFieldsFromData(data)
-
-	// Compare the two field sets
-	return compareTemplateFields(rootTemplateField, rootStructField)
 }
 
 func compareTemplateFields(templateField, structField *templateField) (missing []string, extra []string) {

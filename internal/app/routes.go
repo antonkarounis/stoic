@@ -7,7 +7,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/antonkarounis/stoic/internal/app/handlers"
+	"github.com/antonkarounis/stoic/internal/app/views"
 	"github.com/antonkarounis/stoic/internal/platform/auth"
 	"github.com/antonkarounis/stoic/internal/platform/config"
 	"github.com/antonkarounis/stoic/internal/platform/web"
@@ -24,7 +24,7 @@ func RegisterRoutes(r *mux.Router, cfg *config.Config, authService *auth.AuthSer
 	initTemplates(cfg, r)
 
 	// Public routes
-	r.HandleFunc("/", handlers.Home).Methods("GET").Name("index")
+	r.HandleFunc("/", views.Home()).Methods("GET").Name("index")
 
 	// Auth routes (provided by platform)
 	r.HandleFunc("/login", authService.Login).Methods("GET").Name("login")
@@ -34,13 +34,13 @@ func RegisterRoutes(r *mux.Router, cfg *config.Config, authService *auth.AuthSer
 	// Authenticated routes
 	u := r.PathPrefix("/u").Subrouter()
 	u.Use(authService.RequireAuth)
-	u.HandleFunc("/dashboard", handlers.Dashboard).Methods("GET").Name("dashboard")
-	u.HandleFunc("/events/time", handlers.SSE()).Methods("GET").Name("time")
+	u.HandleFunc("/dashboard", views.Dashboard()).Methods("GET").Name("dashboard")
+	u.HandleFunc("/events/time", views.SSE()).Methods("GET").Name("time")
 
 	// Add your routes here...
 }
 
-func initTemplates(cfg *config.Config, r *mux.Router) {
+func initTemplates(cfg *config.Config, r *mux.Router) *web.TemplateRegistry {
 	var f fs.FS
 	var reload bool
 
@@ -57,7 +57,7 @@ func initTemplates(cfg *config.Config, r *mux.Router) {
 		"url": makeURLFunc(r),
 	}
 
-	manager, err := web.NewTemplateManager(web.TemplateManagerOptions{
+	registry, err := web.NewTemplateRegistry(web.TemplateRegistryOptions{
 		FS:         f,
 		RootDir:    "templates/www",
 		IncludeDir: "templates/include",
@@ -68,7 +68,9 @@ func initTemplates(cfg *config.Config, r *mux.Router) {
 		panic(fmt.Errorf("error when loading templates: %w", err))
 	}
 
-	handlers.Init(manager)
+	views.Init(registry)
+
+	return registry
 }
 
 // makeURLFunc returns a template function that generates URLs from route names.

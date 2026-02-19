@@ -1,4 +1,4 @@
-package handlers
+package views
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 )
 
 func SSE() http.HandlerFunc {
-	return web.ConfigureSSE(func(ctx context.Context, messageChan chan string) {
+	return web.BuildSSEHandler(func(ctx context.Context, messageChan chan string) {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 

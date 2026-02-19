@@ -8,7 +8,7 @@ import (
 
 type SSEHandlerFunc func(context context.Context, messageChan chan string)
 
-func ConfigureSSE(newClient SSEHandlerFunc) http.HandlerFunc {
+func BuildSSEHandler(newClient SSEHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
