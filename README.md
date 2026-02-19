@@ -47,7 +47,7 @@ Stoic boot straps your project with OIDC auth, a Postgres data store, server-ren
    make rename
    ```
 
-3. Start dev services (Postgres + pgAdmin + Keucloak):
+3. Start dev services (Postgres + pgAdmin + Keycloak):
    ```bash
    make dev
    ```
