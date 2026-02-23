@@ -1,0 +1,13 @@
+{{ define "title" }}Dashboard{{ end }}
+
+{{ define "head" }}
+<script defer src="https://unpkg.com/htmx.org@1.9.10"></script>
+<script defer src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+{{ end }}
+
+{{ define "content" }}
+    <article>
+        <header>Datetime via SSE</header>
+        <p hx-ext="sse" sse-connect="{{ url "time"}}" sse-swap="message">&nbsp;</p>
+    </article>
+{{ end }}

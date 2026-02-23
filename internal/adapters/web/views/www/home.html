@@ -1,0 +1,14 @@
+{{ define "title" }}Home{{ end }}
+
+{{ define "content" }} 
+    {{ if not isLoggedIn }}
+        <h1>Welcome</h1>
+        <p>Sign in to continue.</p>
+        <a href="{{ url "login"}}"><button>Log in</button></a>
+    
+    {{ else }}
+        <h1>Hi {{ session.DisplayName }}!</h1>
+        <a href="{{ url "dashboard"}}">Dashboard</a>
+    {{ end }}
+{{ end }}
+ 

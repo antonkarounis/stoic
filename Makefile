@@ -4,7 +4,6 @@
 setup:
 	go install github.com/air-verse/air@latest
 
-
 ## Run the application
 run: setup sqlc
 	air
@@ -19,8 +18,8 @@ dev-stop:
 
 ## Regenerate SQLC code
 sqlc:
-	rm -f ./internal/platform/db/gen/*.go
-	cd ./internal/platform/db && sqlc generate
+	rm -f ./internal/adapters/db/gen/*.go
+	cd ./internal/adapters/db && sqlc generate
 
 ## Rename the Go module to your own path
 rename: 

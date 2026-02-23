@@ -2,35 +2,33 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	gorillaHandlers "github.com/gorilla/handlers"
+	"github.com/antonkarounis/balance/internal/adapters/db"
+	"github.com/antonkarounis/balance/internal/adapters/db/gen"
+	views "github.com/antonkarounis/balance/internal/adapters/web"
+	"github.com/antonkarounis/balance/internal/ports"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
-
-	"github.com/antonkarounis/stoic/internal/app"
-	"github.com/antonkarounis/stoic/internal/platform/auth"
-	"github.com/antonkarounis/stoic/internal/platform/config"
-	"github.com/antonkarounis/stoic/internal/platform/db"
-	"github.com/antonkarounis/stoic/internal/platform/db/gen"
 )
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// G2: Load .env file if present (not required in container deployments)
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using environment variables")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cfg := config.Load()
+	cfg := LoadConfig()
 
 	// Run migrations (using embedded SQL files, with advisory lock for safe multi-instance startup)
 	if err := db.Migrate(ctx, db.PlatformMigrations, "migrations", cfg.DatabaseURL); err != nil {
@@ -47,42 +45,31 @@ func main() {
 	// Initialize SQLC queries
 	queries := gen.New(pool)
 
+	sessionRepository := db.NewSessionRepository(ctx, queries)
+	userRepository := db.NewUserRepository(queries)
+
+	// Create auth config from infrastructure config
+	authCfg := &views.AuthConfig{
+		OIDCIssuerURL:    cfg.OIDCIssuerURL,
+		OIDCClientID:     cfg.OIDCClientID,
+		OIDCClientSecret: cfg.OIDCClientSecret,
+		OIDCLogoutURL:    cfg.OIDCLogoutURL,
+		AppURL:           cfg.AppURL,
+		SecretKey:        cfg.SecretKey,
+		IsDev:            cfg.Environment == "dev",
+	}
+
 	// Initialize auth service (OIDC provider + DB access)
-	authService, err := auth.NewAuthService(ctx, cfg, queries)
+	authService, err := views.NewAuthService(ctx, authCfg, sessionRepository, userRepository)
 	if err != nil {
 		log.Fatalf("Failed to initialize auth: %v", err)
 	}
 
-	// Periodically clean up expired sessions
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := queries.DeleteExpiredSessions(ctx); err != nil {
-					log.Printf("Failed to cleanup expired sessions: %v", err)
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
 	// Set up router and middleware
 	r := mux.NewRouter()
-	r.Use(noCache)
-	r.Use(securityHeaders)
-	r.Use(func(next http.Handler) http.Handler {
-		return gorillaHandlers.LoggingHandler(os.Stdout, next)
-	})
-	r.Use(gorillaHandlers.RecoveryHandler())
-	cop := http.NewCrossOriginProtection()
-	r.Use(func(next http.Handler) http.Handler { return cop.Handler(next) })
-	r.Use(authService.OptionalAuth)
 
 	// Register application routes
-	app.RegisterRoutes(r, cfg, authService)
+	views.RegisterRoutes(r, *authService)
 
 	// Start HTTP server
 	server := &http.Server{
@@ -114,28 +101,40 @@ func main() {
 	log.Println("Server exited gracefully")
 }
 
-// B5: noCache sets cache-busting headers for dynamic routes only.
-// Static file routes (if added later) should be excluded.
-func noCache(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/static/") {
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			w.Header().Set("Pragma", "no-cache")
-			w.Header().Set("Expires", "0")
-		}
-		next.ServeHTTP(w, r)
-	})
+func LoadConfig() *ports.Config {
+	secretKeyB64 := requireEnv("SECRET_KEY")
+	secretKey, err := base64.StdEncoding.DecodeString(secretKeyB64)
+	if err != nil {
+		panic(fmt.Sprintf("SECRET_KEY is not valid base64: %v", err))
+	}
+	if len(secretKey) != 32 {
+		panic(fmt.Sprintf("SECRET_KEY must decode to exactly 32 bytes, got %d", len(secretKey)))
+	}
+
+	return &ports.Config{
+		Environment:      getEnv("ENVIRONMENT", "prod"),
+		AppURL:           requireEnv("APP_URL"),
+		Addr:             getEnv("ADDR", ":8080"),
+		DatabaseURL:      requireEnv("DATABASE_URL"),
+		OIDCIssuerURL:    requireEnv("OIDC_ISSUER_URL"),
+		OIDCClientID:     requireEnv("OIDC_CLIENT_ID"),
+		OIDCClientSecret: requireEnv("OIDC_CLIENT_SECRET"),
+		OIDCLogoutURL:    getEnv("OIDC_LOGOUT_URL", ""),
+		SecretKey:        secretKey,
+	}
 }
 
-// S7: securityHeaders adds standard security headers to all responses.
-func securityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Content-Security-Policy",
-			"default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' https://cdn.jsdelivr.net; connect-src 'self'")
-		next.ServeHTTP(w, r)
-	})
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		panic(fmt.Sprintf("required environment variable %s is not set", key))
+	}
+	return v
 }

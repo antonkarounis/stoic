@@ -1,0 +1,27 @@
+{{ define "title" }}Profile{{ end }}
+
+{{ define "content" }}
+
+    <h1>Dashboard</h1>
+    
+    <article>
+        <header>User Info</header>
+        <p><strong>Email:</strong> {{.Email}}</p>
+        <p><strong>User ID:</strong> {{.UserID}}</p>
+        <p><strong>Roles:</strong></p>
+        {{if .Roles}}
+        <ul>
+            {{range .Roles}}
+            <li>{{.}}</li>
+            {{end}}
+        </ul>
+        {{else}}
+        <p><em>No roles assigned</em></p>
+        {{end}}
+    </article>
+
+    <form method="POST" action="{{ url "logout" }}" style="margin:0">
+        <button type="submit" class="secondary outline" style="margin:0;padding:0.25rem 0.75rem;border:none">Logout</button>
+    </form>
+
+{{ end }}
