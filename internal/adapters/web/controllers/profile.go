@@ -1,37 +1,41 @@
 package controllers
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 
-	"github.com/antonkarounis/balance/internal/adapters/web/framework"
+	"github.com/antonkarounis/stoic/internal/adapters/web/framework"
 )
 
+type MemberViewModel struct {
+	ID   string
+	Name string
+	Role string
+}
+
 type ProfileViewModel struct {
-	Email  string
-	UserID string
-	Roles  []string
+	Name  string
+	Email string
 }
 
 func Profile(registry *framework.TemplateRegistry) http.HandlerFunc {
 	return registry.BuildHandler("profile.html", ProfileViewModel{},
 		func(w http.ResponseWriter, r *http.Request, te *framework.TemplateRenderer) {
-			session, err := framework.GetSessionFromContext(r)
+			user, err := framework.GetUserFromContext(r)
 			if err != nil {
-				log.Printf("Session context error: %v", err)
+				slog.Error("user context error", "error", err)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 				return
 			}
 
-			data := ProfileViewModel{
-				Email:  session.Email,
-				UserID: session.UserID,
-				Roles:  session.Roles,
+			if err != nil {
+				httpError(w, err)
+				return
 			}
 
-			err = te.WriteTo(w, data)
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			}
+			te.WriteTo(w, ProfileViewModel{
+				Name:  user.Name,
+				Email: user.Email,
+			})
 		})
 }

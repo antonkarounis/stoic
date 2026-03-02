@@ -1,0 +1,10 @@
+:root {
+  --pico-form-element-spacing-vertical: 0.35rem;
+  --pico-form-element-spacing-horizontal: 0.75rem;
+  --pico-font-size: 1rem;
+}
+
+button, button[type="submit"], input[type="button"], input[type="submit"] {
+    width: auto;
+    min-width: 6rem;
+}

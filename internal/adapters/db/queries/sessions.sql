@@ -1,9 +1,9 @@
 -- name: CreateSession :exec
-INSERT INTO sessions (session_id, user_id, token_data, id_token, expires_at, updated_at)
+INSERT INTO sessions (session_id, identity_id, token_data, id_token, expires_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, NOW());
 
 -- name: GetSession :one
-SELECT session_id, user_id, token_data, id_token, expires_at, created_at, updated_at
+SELECT session_id, identity_id, token_data, id_token, expires_at, created_at, updated_at
 FROM sessions
 WHERE session_id = $1
 LIMIT 1;

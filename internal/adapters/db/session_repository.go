@@ -2,17 +2,20 @@ package db
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
-	"github.com/antonkarounis/balance/internal/adapters/db/gen"
-	"github.com/antonkarounis/balance/internal/ports"
+	"github.com/antonkarounis/stoic/internal/adapters/db/gen"
+	"github.com/antonkarounis/stoic/internal/domain/models"
+	"github.com/antonkarounis/stoic/internal/domain/ports"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type SessionRepository struct {
 	queries *gen.Queries
 }
+
+var _ ports.SessionRepository = (*SessionRepository)(nil)
 
 func NewSessionRepository(ctx context.Context, q *gen.Queries) *SessionRepository {
 	startCleanupRoutine(ctx, q)
@@ -28,7 +31,7 @@ func startCleanupRoutine(ctx context.Context, queries *gen.Queries) {
 			select {
 			case <-ticker.C:
 				if err := queries.DeleteExpiredSessions(ctx); err != nil {
-					log.Printf("Failed to cleanup expired sessions: %v", err)
+					slog.Warn("failed to clean up expired sessions", "error", err)
 				}
 			case <-ctx.Done():
 				return
@@ -38,13 +41,13 @@ func startCleanupRoutine(ctx context.Context, queries *gen.Queries) {
 }
 
 // CreateSession implements [auth.SessionRepository].
-func (s *SessionRepository) CreateSession(ctx context.Context, sessionID string, session ports.SessionData) error {
+func (s *SessionRepository) CreateSession(ctx context.Context, sessionID string, session models.SessionData) error {
 	return s.queries.CreateSession(ctx, gen.CreateSessionParams{
-		SessionID: sessionID,
-		UserID:    session.UserDBID,
-		TokenData: session.TokenData,
-		IDToken:   session.IDToken,
-		ExpiresAt: pgtype.Timestamptz{Time: session.Expires, Valid: true},
+		SessionID:  sessionID,
+		IdentityID: session.IdentityID,
+		TokenData:  session.TokenData,
+		IDToken:    session.IDToken,
+		ExpiresAt:  pgtype.Timestamptz{Time: session.Expires, Valid: true},
 	})
 }
 
@@ -54,22 +57,22 @@ func (s *SessionRepository) DeleteSession(ctx context.Context, sessionID string)
 }
 
 // GetSession implements [auth.SessionRepository].
-func (s *SessionRepository) GetSession(ctx context.Context, sessionID string) (*ports.SessionData, error) {
+func (s *SessionRepository) GetSession(ctx context.Context, sessionID string) (*models.SessionData, error) {
 	session, err := s.queries.GetSession(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return nil, mapErr(err)
 	}
 
-	return &ports.SessionData{
-		IDToken:   session.IDToken,
-		UserDBID:  session.UserID,
-		Expires:   session.ExpiresAt.Time,
-		TokenData: session.TokenData,
+	return &models.SessionData{
+		IDToken:    session.IDToken,
+		IdentityID: session.IdentityID,
+		Expires:    session.ExpiresAt.Time,
+		TokenData:  session.TokenData,
 	}, nil
 }
 
 // UpdateSessionToken implements [auth.SessionRepository].
-func (s *SessionRepository) UpdateSessionToken(ctx context.Context, sessionID string, session ports.SessionData) error {
+func (s *SessionRepository) UpdateSessionToken(ctx context.Context, sessionID string, session models.SessionData) error {
 	return s.queries.UpdateSessionToken(ctx, gen.UpdateSessionTokenParams{
 		SessionID: sessionID,
 		TokenData: session.TokenData,

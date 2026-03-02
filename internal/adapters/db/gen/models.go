@@ -8,21 +8,30 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Identity struct {
+	ID          int64
+	AuthSub     string
+	LastLoginAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	UserID      pgtype.Text
+}
+
 type Session struct {
-	SessionID string
-	UserID    int64
-	TokenData []byte
-	IDToken   string
-	ExpiresAt pgtype.Timestamptz
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	SessionID  string
+	IdentityID int64
+	TokenData  []byte
+	IDToken    string
+	ExpiresAt  pgtype.Timestamptz
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
 }
 
 type User struct {
-	ID          int64
-	AuthSub     string
-	Email       string
-	DisplayName string
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
+	ID        string
+	Name      string
+	Email     string
+	Role      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
 }

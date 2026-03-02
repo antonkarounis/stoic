@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -17,15 +17,14 @@ import (
 //go:embed migrations/*.sql
 var PlatformMigrations embed.FS
 
-type MigrateLogger struct {
-	Logger log.Logger
+// slogMigrateLogger adapts slog to the golang-migrate Logger interface.
+type slogMigrateLogger struct{}
+
+func (l *slogMigrateLogger) Printf(format string, v ...interface{}) {
+	slog.Info(fmt.Sprintf(format, v...))
 }
 
-func (ml *MigrateLogger) Printf(format string, v ...interface{}) {
-	ml.Logger.Printf(format, v...)
-}
-
-func (ml *MigrateLogger) Verbose() bool {
+func (l *slogMigrateLogger) Verbose() bool {
 	return true
 }
 
@@ -45,7 +44,7 @@ func Migrate(ctx context.Context, migrations fs.FS, subdir string, dbUrl string)
 	}
 	defer func() {
 		if _, err := conn.Exec(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockID); err != nil {
-			log.Printf("Failed to release migration lock: %v", err)
+			slog.Warn("failed to release migration lock", "error", err)
 		}
 	}()
 
@@ -60,20 +59,26 @@ func Migrate(ctx context.Context, migrations fs.FS, subdir string, dbUrl string)
 	}
 	defer m.Close()
 
-	m.Log = &MigrateLogger{
-		Logger: *log.Default(),
-	}
+	m.Log = &slogMigrateLogger{}
 
-	log.Println("starting migrations")
+	slog.Info("starting migrations")
 
 	err = m.Up()
 	if errors.Is(err, migrate.ErrNoChange) {
-		log.Println("no migrations required")
+		slog.Info("no migrations required")
 		return nil
 	} else if err != nil {
+		version, dirty, vErr := m.Version()
+
+		if dirty && vErr == nil {
+			slog.Warn("dirty migration state, attempting rollback", "version", version)
+			m.Force(int(version))
+			m.Down()
+		}
+
 		return fmt.Errorf("error running migrations: %w", err)
 	}
 
-	log.Println("completed migrations")
+	slog.Info("completed migrations")
 	return nil
 }

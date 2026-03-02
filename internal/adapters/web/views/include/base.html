@@ -4,23 +4,30 @@
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="color-scheme" content="light dark">
-        <title>Balance - {{ block "title" . }}{{ end }}</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.classless.slate.min.css">
-        <link rel="stylesheet" href="{{ url "static" }}style.css">
+        <title>stoic - {{ block "title" . }}{{ end }}</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.slate.min.css">
+        <link rel="stylesheet" href="{{ urlFor "static" }}style.css">
         {{ block "head" . }}{{ end }}
     </head>
 
     <body>
-        <header>
+        <header class="container">
             <nav>
-                <ul><li><strong><a href="{{ url "index"}}">Balance</a></strong></li></ul>
-                <ul>{{ block "nav" . }}{{ end }}</ul>
+                <ul><li><strong><a href="{{ urlFor "index"}}">stoic</a></strong></li></ul>
+                {{ if isLoggedIn }}
+                    <ul>
+                        <li>
+                            <li><a href="{{ urlFor "dashboard" }}">dashboard</a></li>
+                            <li><a href="{{ urlFor "profile" }}">profile</a></li>
+                        </li>
+                    </ul>
+                {{ end }}
             </nav>
         </header>
-        <main>
+        <main class="container">
             {{ block "content" . }}{{ end }}
         </main>
-        <footer>
+        <footer class="container">
             <small>Built with <a href="https://github.com/antonkarounis/stoic">Stoic</a></small>
         </footer>
     </body>

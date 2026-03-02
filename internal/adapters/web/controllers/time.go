@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/antonkarounis/balance/internal/adapters/web/framework"
+	"github.com/antonkarounis/stoic/internal/adapters/web/framework"
 )
 
 func Time() http.HandlerFunc {

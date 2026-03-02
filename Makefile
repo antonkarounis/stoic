@@ -29,7 +29,7 @@ rename:
 	go mod tidy; \
 	echo "Done. Module renamed to $$mod"
 
-clean:
+clean: dev-stop
 	sudo rm -rf dev/data/postgres
 	sudo rm -rf dev/data/app
 

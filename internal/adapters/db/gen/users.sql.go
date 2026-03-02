@@ -7,23 +7,25 @@ package gen
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getUserByAuthSub = `-- name: GetUserByAuthSub :one
-SELECT id, auth_sub, email, display_name, created_at, updated_at
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, name, email,  role, created_at, updated_at
 FROM users
-WHERE auth_sub = $1
+WHERE email = $1
 LIMIT 1
 `
 
-func (q *Queries) GetUserByAuthSub(ctx context.Context, authSub string) (User, error) {
-	row := q.db.QueryRow(ctx, getUserByAuthSub, authSub)
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.AuthSub,
+		&i.Name,
 		&i.Email,
-		&i.DisplayName,
+		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -31,53 +33,52 @@ func (q *Queries) GetUserByAuthSub(ctx context.Context, authSub string) (User, e
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, auth_sub, email, display_name, created_at, updated_at
+SELECT id, name, email,  role, created_at, updated_at
 FROM users
 WHERE id = $1
 LIMIT 1
 `
 
-func (q *Queries) GetUserByID(ctx context.Context, id int64) (User, error) {
+func (q *Queries) GetUserByID(ctx context.Context, id string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByID, id)
 	var i User
 	err := row.Scan(
 		&i.ID,
-		&i.AuthSub,
+		&i.Name,
 		&i.Email,
-		&i.DisplayName,
+		&i.Role,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const upsertUser = `-- name: UpsertUser :one
-INSERT INTO users (auth_sub, email, display_name, updated_at)
-VALUES ($1, $2, $3, NOW())
-ON CONFLICT (auth_sub)
+const upsertUser = `-- name: UpsertUser :exec
+INSERT INTO users (id, name, email, role, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5,  $5)
+ON CONFLICT (id)
 DO UPDATE SET
-    email = EXCLUDED.email,
-    display_name = EXCLUDED.display_name,
-    updated_at = NOW()
-RETURNING id, auth_sub, email, display_name, created_at, updated_at
+    name         = EXCLUDED.name,
+    email        = EXCLUDED.email,
+    role         = EXCLUDED.role,
+    updated_at   = NOW()
 `
 
 type UpsertUserParams struct {
-	AuthSub     string
-	Email       string
-	DisplayName string
+	ID        string
+	Name      string
+	Email     string
+	Role      string
+	CreatedAt pgtype.Timestamptz
 }
 
-func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) (User, error) {
-	row := q.db.QueryRow(ctx, upsertUser, arg.AuthSub, arg.Email, arg.DisplayName)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.AuthSub,
-		&i.Email,
-		&i.DisplayName,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+func (q *Queries) UpsertUser(ctx context.Context, arg UpsertUserParams) error {
+	_, err := q.db.Exec(ctx, upsertUser,
+		arg.ID,
+		arg.Name,
+		arg.Email,
+		arg.Role,
+		arg.CreatedAt,
 	)
-	return i, err
+	return err
 }

@@ -3,12 +3,19 @@
 {{ define "content" }} 
     {{ if not isLoggedIn }}
         <h1>Welcome</h1>
-        <p>Sign in to continue.</p>
-        <a href="{{ url "login"}}"><button>Log in</button></a>
+        
+        <section>
+            <p>Sign in with your username:</p>
+            <a href="{{ urlFor "login"}}"><button>Log in</button></a>
+        </section>
+
+        <section>
+            <p>New here? Create an account:</p>
+            <a href="{{ urlFor "register"}}"><button>Sign up</button></a>
+        </section>
     
     {{ else }}
-        <h1>Hi {{ session.DisplayName }}!</h1>
-        <a href="{{ url "dashboard"}}">Dashboard</a>
+        <p>Hi {{ currentUser.Name }}!</p>
     {{ end }}
 {{ end }}
  

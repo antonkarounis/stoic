@@ -9,14 +9,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/antonkarounis/balance/internal/adapters/web/framework"
-	"github.com/antonkarounis/balance/internal/ports"
+	"github.com/antonkarounis/stoic/internal/adapters/web/framework"
+	"github.com/antonkarounis/stoic/internal/domain/models"
+	"github.com/antonkarounis/stoic/internal/domain/ports"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
@@ -32,15 +33,26 @@ type AuthConfig struct {
 	IsDev            bool
 }
 
+// Claims are the provider-independent OIDC claims (sub, email, name).
+type oidcClaims struct {
+	Sub   string `json:"sub"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 // AuthService encapsulates all authentication state and operations.
 type AuthService struct {
-	provider       *oidc.Provider
-	oauth2Config   oauth2.Config
-	verifier       *oidc.IDTokenVerifier
-	sessionManager ports.SessionRepository
-	userManager    ports.UserRepository
-	cfg            *AuthConfig
-	roleExtractor  RoleExtractor
+	provider             *oidc.Provider
+	oauth2Config         oauth2.Config
+	verifier             *oidc.IDTokenVerifier
+	sessionManager       ports.SessionRepository
+	identityManager      ports.IdentityRepository
+	cfg                  *AuthConfig
+	roleExtractor        RoleExtractor
+	loginRedirect        string
+	loginFailureRedirect string
+	onFirstLogin         func(ctx context.Context, email, name string) (models.UserID, error)
+	onLogin              func(ctx context.Context, userID models.UserID, email, name string) error
 }
 
 // RoleExtractor extracts roles from raw OIDC claims.
@@ -57,7 +69,7 @@ type tokenData struct {
 	Roles        []string  `json:"roles"`
 }
 
-func NewAuthService(ctx context.Context, cfg *AuthConfig, sessionManager ports.SessionRepository, userManager ports.UserRepository) (*AuthService, error) {
+func NewAuthService(ctx context.Context, cfg *AuthConfig, sessionManager ports.SessionRepository, identityManager ports.IdentityRepository) (*AuthService, error) {
 	provider, err := connectOIDCProvider(ctx, cfg.OIDCIssuerURL)
 	if err != nil {
 		return nil, err
@@ -76,13 +88,13 @@ func NewAuthService(ctx context.Context, cfg *AuthConfig, sessionManager ports.S
 	})
 
 	return &AuthService{
-		provider:       provider,
-		oauth2Config:   oauth2Config,
-		verifier:       verifier,
-		sessionManager: sessionManager,
-		userManager:    userManager,
-		cfg:            cfg,
-		roleExtractor:  KeycloakRoleExtractor,
+		provider:        provider,
+		oauth2Config:    oauth2Config,
+		verifier:        verifier,
+		sessionManager:  sessionManager,
+		identityManager: identityManager,
+		cfg:             cfg,
+		roleExtractor:   KeycloakRoleExtractor,
 	}, nil
 }
 
@@ -153,6 +165,28 @@ func tokenFromJSON(data []byte) (*oauth2.Token, []string, error) {
 	return token, td.Roles, nil
 }
 
+func (s *AuthService) SetLoginRedirect(url string) {
+	s.loginRedirect = url
+}
+
+func (s *AuthService) SetLoginFailureRedirect(url string) {
+	s.loginFailureRedirect = url
+}
+
+// SetFirstLoginHook registers a function called on the first successful OIDC login
+// for an identity that has no linked domain user yet. It should provision a User
+// and return the new UserID so the identity can be linked.
+func (s *AuthService) SetFirstLoginHook(fn func(ctx context.Context, email, name string) (models.UserID, error)) {
+	s.onFirstLogin = fn
+}
+
+// SetOnLoginHook registers a function called on every successful login for an identity
+// that already has a linked domain user. Use this to sync updated email/name from the
+// OIDC provider to the domain user record.
+func (s *AuthService) SetOnLoginHook(fn func(ctx context.Context, userID models.UserID, email, name string) error) {
+	s.onLogin = fn
+}
+
 // encryptToken serializes and encrypts token data for storage.
 // Returns a JSON-safe base64-encoded string (compatible with JSONB columns).
 func (s *AuthService) encryptToken(token *oauth2.Token, roles []string) ([]byte, error) {
@@ -209,7 +243,7 @@ func connectOIDCProvider(ctx context.Context, issuerURL string) (*oidc.Provider,
 			break
 		}
 
-		log.Printf("OIDC provider not ready, retrying in %s...", retryInterval)
+		slog.Debug("OIDC provider not ready, retrying", "interval", retryInterval, "error", err)
 		select {
 		case <-time.After(retryInterval):
 		case <-ctx.Done():
@@ -222,11 +256,13 @@ func connectOIDCProvider(ctx context.Context, issuerURL string) (*oidc.Provider,
 
 func (s *AuthService) GenerateState() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic("crypto/rand is unavailable: " + err.Error())
+	}
 	return base64.URLEncoding.EncodeToString(b)
 }
 
-func (s *AuthService) GetSession(ctx context.Context, sessionID string) (*ports.SessionData, bool) {
+func (s *AuthService) GetSession(ctx context.Context, sessionID string) (*models.SessionData, bool) {
 	session, err := s.sessionManager.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, false
@@ -240,19 +276,18 @@ func (s *AuthService) GetSession(ctx context.Context, sessionID string) (*ports.
 	session.Token = token
 	session.Roles = roles
 
-	user, err := s.userManager.GetUserByID(ctx, session.UserDBID)
+	identity, err := s.identityManager.GetIdentityByID(ctx, session.IdentityID)
 	if err != nil {
 		return nil, false
 	}
 
-	session.UserID = user.AuthSub
-	session.Email = user.Email
-	session.DisplayName = user.DisplayName
+	session.SubjectID = identity.AuthSub
+	session.UserID = identity.UserID
 
 	return session, true
 }
 
-func (s *AuthService) SetSession(ctx context.Context, sessionID string, session ports.SessionData) error {
+func (s *AuthService) SetSession(ctx context.Context, sessionID string, session models.SessionData) error {
 	tokenEncrypted, err := s.encryptToken(session.Token, session.Roles)
 	if err != nil {
 		return fmt.Errorf("encrypting token data: %w", err)
@@ -262,7 +297,7 @@ func (s *AuthService) SetSession(ctx context.Context, sessionID string, session 
 	return s.sessionManager.CreateSession(ctx, sessionID, session)
 }
 
-func (s *AuthService) RefreshToken(ctx context.Context, sessionID string, session *ports.SessionData) error {
+func (s *AuthService) RefreshToken(ctx context.Context, sessionID string, session *models.SessionData) error {
 	if session.Token.Expiry.After(time.Now()) {
 		return nil
 	}
@@ -286,6 +321,15 @@ func (s *AuthService) RefreshToken(ctx context.Context, sessionID string, sessio
 // AuthCodeURL generates the OAuth2 authorization code URL with the given state
 func (s *AuthService) AuthCodeURL(state string) string {
 	return s.oauth2Config.AuthCodeURL(state)
+}
+
+// registrationCodeURL generates a Keycloak registration URL by replacing the OIDC
+// auth endpoint (/auth) with the registration endpoint (/registrations).
+// All standard OAuth2 parameters (state, client_id, redirect_uri, scope) are preserved,
+// so the callback flow is identical to a normal login.
+func (s *AuthService) registrationCodeURL(state string) string {
+	authURL := s.oauth2Config.AuthCodeURL(state)
+	return strings.Replace(authURL, "/protocol/openid-connect/auth", "/protocol/openid-connect/registrations", 1)
 }
 
 // ExchangeToken exchanges an authorization code for an OAuth2 token and extracts the raw ID token
@@ -327,22 +371,31 @@ func (s *AuthService) ExtractRoles(rawClaims json.RawMessage) ([]string, error) 
 	return s.roleExtractor(rawClaims, s.cfg.OIDCClientID)
 }
 
-// RevokeSession revokes an OIDC session via backchannel logout
-func (s *AuthService) RevokeSession(session ports.SessionData) {
+// RevokeSession revokes an OIDC session via backchannel logout.
+// The HTTP request is sent in a goroutine so logout does not block.
+func (s *AuthService) RevokeSession(session models.SessionData) {
 	if s.cfg.OIDCLogoutURL == "" || session.Token == nil || session.Token.RefreshToken == "" {
 		return
 	}
 
-	resp, err := http.PostForm(s.cfg.OIDCLogoutURL, url.Values{
-		"client_id":     {s.cfg.OIDCClientID},
-		"client_secret": {s.cfg.OIDCClientSecret},
-		"refresh_token": {session.Token.RefreshToken},
-	})
-	if err != nil {
-		log.Printf("OIDC backchannel logout request failed: %v", err)
-		return
-	}
-	resp.Body.Close()
+	logoutURL := s.cfg.OIDCLogoutURL
+	clientID := s.cfg.OIDCClientID
+	clientSecret := s.cfg.OIDCClientSecret
+	refreshToken := session.Token.RefreshToken
+
+	go func() {
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.PostForm(logoutURL, url.Values{
+			"client_id":     {clientID},
+			"client_secret": {clientSecret},
+			"refresh_token": {refreshToken},
+		})
+		if err != nil {
+			slog.Warn("OIDC backchannel logout request failed", "error", err)
+			return
+		}
+		resp.Body.Close()
+	}()
 }
 
 func encrypt(plaintext, key []byte) ([]byte, error) {
@@ -386,66 +439,47 @@ func decrypt(ciphertext, key []byte) ([]byte, error) {
 
 // --- middleware ---
 
-// RequireAuth is middleware that requires a valid session
+// RequireAuth is middleware that requires both a valid session and a resolved domain user.
+// Redirects to loginFailureRedirect if either is absent.
 func (s *AuthService) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if session := framework.GetOptionalSession(r); session != nil {
-			cookie, _ := r.Cookie("session_id")
-			if cookie != nil {
-				if err := s.RefreshToken(r.Context(), cookie.Value, session); err != nil {
-					http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
-					return
-				}
-			}
-			next.ServeHTTP(w, r)
+		if framework.GetAuthSession(r) == nil {
+			http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 			return
 		}
+		if framework.GetLoggedInUser(r) == nil {
+			http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
+// CheckAuth validates the session cookie and stores the auth session in the request context.
+// It does not load the domain user — that is handled by the ResolveUser middleware.
+func (s *AuthService) CheckAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("session_id")
 		if err != nil {
-			http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+			next.ServeHTTP(w, r)
 			return
 		}
 
 		session, exists := s.GetSession(r.Context(), cookie.Value)
 		if !exists || time.Now().After(session.Expires) {
-			http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+			s.DeleteSession(w, r)
+			next.ServeHTTP(w, r)
 			return
 		}
 
 		if err := s.RefreshToken(r.Context(), cookie.Value, session); err != nil {
-			http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
-			return
-		}
-
-		next.ServeHTTP(w, framework.SetSessionInContext(r, session))
-	})
-}
-
-// OptionalAuth adds session to context if logged in
-func (s *AuthService) OptionalAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("session_id")
-		if err != nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		session, exists := s.GetSession(r.Context(), cookie.Value)
-		if !exists || time.Now().After(session.Expires) {
+			slog.Warn("token refresh failed, deleting session", "session_id", cookie.Value, "error", err)
 			s.DeleteSession(w, r)
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		err = s.RefreshToken(r.Context(), cookie.Value, session)
-		if err != nil {
-			s.DeleteSession(w, r)
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		next.ServeHTTP(w, framework.SetSessionInContext(r, session))
+		next.ServeHTTP(w, framework.SetAuthSession(r, session))
 	})
 }
 
@@ -469,48 +503,70 @@ func (s *AuthService) Login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
 }
 
-// Callback handles GET /callback — OIDC callback
+// Register handles GET /register — redirects to Keycloak's registration page.
+// After the user registers, Keycloak redirects back to /callback as normal.
+func (s *AuthService) Register(w http.ResponseWriter, r *http.Request) {
+	state := s.GenerateState()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   !s.cfg.IsDev,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	http.Redirect(w, r, s.registrationCodeURL(state), http.StatusTemporaryRedirect)
+}
+
+// Callback handles GET /callback — OIDC callback.
+// On first login (identity.UserID == nil), calls onFirstLogin to provision a domain user,
+// then links the identity to that user.
 func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil || stateCookie.Value != r.URL.Query().Get("state") {
 		s.DeleteSession(w, r)
-		http.Error(w, "Invalid state", http.StatusBadRequest)
+		http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 		return
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:   "oauth_state",
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     "oauth_state",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   !s.cfg.IsDev,
+		SameSite: http.SameSiteLaxMode,
 	})
 
 	code := r.URL.Query().Get("code")
 	token, rawIDToken, err := s.ExchangeToken(ctx, code)
 	if err != nil {
-		log.Printf("Token exchange error: %v", err)
+		slog.Error("token exchange failed", "error", err)
 		s.DeleteSession(w, r)
-		http.Error(w, "Failed to exchange token", http.StatusInternalServerError)
+		http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 		return
 	}
 
-	claims := &ports.Claims{}
-
+	claims := &oidcClaims{}
 	stdClaims, rawClaims, err := s.VerifyToken(ctx, rawIDToken, claims)
 	if err != nil {
+		slog.Error("token verification failed", "error", err)
 		s.DeleteSession(w, r)
-		log.Printf("Token verification error: %v", err)
-		http.Error(w, "Failed to verify token", http.StatusUnauthorized)
+		http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 		return
 	}
 
-	claims = stdClaims.(*ports.Claims)
+	claims = stdClaims.(*oidcClaims)
 
 	roles, err := s.ExtractRoles(rawClaims)
 	if err != nil {
-		log.Printf("Role extraction error: %v", err)
+		slog.Warn("role extraction failed, proceeding without roles", "error", err)
 		roles = nil
 	}
 
@@ -519,28 +575,48 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		displayName = claims.Email
 	}
 
-	userDBID, err := s.userManager.UpsertUser(ctx, claims.Sub, claims.Email, displayName)
+	identity, err := s.identityManager.UpsertIdentity(ctx, claims.Sub)
 	if err != nil {
+		slog.Error("identity upsert failed", "error", err)
 		s.DeleteSession(w, r)
-		log.Printf("User upsert error: %v", err)
-		http.Error(w, "Failed to save user", http.StatusInternalServerError)
+		http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 		return
 	}
 
+	if identity.UserID == nil && s.onFirstLogin != nil {
+		userID, err := s.onFirstLogin(ctx, claims.Email, displayName)
+		if err != nil {
+			slog.Error("first login provisioning failed", "error", err)
+			s.DeleteSession(w, r)
+			http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
+			return
+		}
+		if err := s.identityManager.LinkUser(ctx, identity.ID, userID); err != nil {
+			slog.Error("identity link failed", "identity_id", identity.ID, "user_id", userID, "error", err)
+			s.DeleteSession(w, r)
+			http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
+			return
+		}
+		slog.Info("first login: provisioned user and linked identity", "identity_id", identity.ID, "user_id", userID)
+	} else if identity.UserID != nil && s.onLogin != nil {
+		if err := s.onLogin(ctx, *identity.UserID, claims.Email, displayName); err != nil {
+			slog.Warn("onLogin hook failed", "identity_id", identity.ID, "user_id", identity.UserID, "error", err)
+		}
+		slog.Info("login", "identity_id", identity.ID, "user_id", identity.UserID)
+	}
+
 	sessionID := s.GenerateState()
-	if err := s.SetSession(ctx, sessionID, ports.SessionData{
-		Token:       token,
-		IDToken:     rawIDToken,
-		UserID:      claims.Sub,
-		UserDBID:    userDBID,
-		Email:       claims.Email,
-		DisplayName: displayName,
-		Roles:       roles,
-		Expires:     time.Now().Add(24 * time.Hour),
+	if err := s.SetSession(ctx, sessionID, models.SessionData{
+		Token:      token,
+		IDToken:    rawIDToken,
+		SubjectID:  claims.Sub,
+		IdentityID: identity.ID,
+		Roles:      roles,
+		Expires:    time.Now().Add(24 * time.Hour),
 	}); err != nil {
+		slog.Error("session creation failed", "error", err)
 		s.DeleteSession(w, r)
-		log.Printf("Session creation error: %v", err)
-		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		http.Redirect(w, r, framework.UrlFor(r, s.loginFailureRedirect), http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -554,7 +630,7 @@ func (s *AuthService) Callback(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 
-	http.Redirect(w, r, "/u/dashboard", http.StatusTemporaryRedirect)
+	http.Redirect(w, r, framework.UrlFor(r, s.loginRedirect), http.StatusTemporaryRedirect)
 }
 
 // Logout handles POST /logout
@@ -564,8 +640,6 @@ func (s *AuthService) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *AuthService) DeleteSession(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("deleting session")
-
 	cookie, err := r.Cookie("session_id")
 	if err == nil {
 		if session, exists := s.GetSession(r.Context(), cookie.Value); exists {
@@ -575,9 +649,12 @@ func (s *AuthService) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:   "session_id",
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
+		Name:     "session_id",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   !s.cfg.IsDev,
+		SameSite: http.SameSiteLaxMode,
 	})
 }

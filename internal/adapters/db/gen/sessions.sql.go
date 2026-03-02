@@ -12,22 +12,22 @@ import (
 )
 
 const createSession = `-- name: CreateSession :exec
-INSERT INTO sessions (session_id, user_id, token_data, id_token, expires_at, updated_at)
+INSERT INTO sessions (session_id, identity_id, token_data, id_token, expires_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, NOW())
 `
 
 type CreateSessionParams struct {
-	SessionID string
-	UserID    int64
-	TokenData []byte
-	IDToken   string
-	ExpiresAt pgtype.Timestamptz
+	SessionID  string
+	IdentityID int64
+	TokenData  []byte
+	IDToken    string
+	ExpiresAt  pgtype.Timestamptz
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) error {
 	_, err := q.db.Exec(ctx, createSession,
 		arg.SessionID,
-		arg.UserID,
+		arg.IdentityID,
 		arg.TokenData,
 		arg.IDToken,
 		arg.ExpiresAt,
@@ -56,7 +56,7 @@ func (q *Queries) DeleteSession(ctx context.Context, sessionID string) error {
 }
 
 const getSession = `-- name: GetSession :one
-SELECT session_id, user_id, token_data, id_token, expires_at, created_at, updated_at
+SELECT session_id, identity_id, token_data, id_token, expires_at, created_at, updated_at
 FROM sessions
 WHERE session_id = $1
 LIMIT 1
@@ -67,7 +67,7 @@ func (q *Queries) GetSession(ctx context.Context, sessionID string) (Session, er
 	var i Session
 	err := row.Scan(
 		&i.SessionID,
-		&i.UserID,
+		&i.IdentityID,
 		&i.TokenData,
 		&i.IDToken,
 		&i.ExpiresAt,

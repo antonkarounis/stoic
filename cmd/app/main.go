@@ -55,14 +55,8 @@ func main() {
 	identityRepository := db.NewIdentityRepository(queries)
 
 	userRepository := db.NewUserRepository(queries)
-	householdRepository := db.NewHouseholdRepository(queries)
-	inviteRepository := db.NewInviteRepository(ctx, queries)
-
-	transactor := db.NewTransactor(pool, queries)
 
 	userService := services.NewUserService(userRepository)
-	householdService := services.NewHouseholdService(userRepository, householdRepository, transactor)
-	inviteService := services.NewInviteService(userRepository, inviteRepository, noopEmailSender{}, transactor)
 
 	// Create auth config from infrastructure config
 	authCfg := &views.AuthConfig{
@@ -99,7 +93,7 @@ func main() {
 	r := mux.NewRouter()
 
 	isDev := cfg.Environment == "dev"
-	views.RegisterRoutes(r, *authService, userRepository, householdService, inviteService, pool, isDev)
+	views.RegisterRoutes(r, *authService, userRepository, pool, isDev)
 
 	// Start HTTP server with timeouts
 	server := &http.Server{

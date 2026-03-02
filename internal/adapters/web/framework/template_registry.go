@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"path"
 	"reflect"
@@ -196,20 +196,22 @@ func (tm *TemplateRegistry) buildRenderer(templatePath string, exampleModel any)
 }
 
 func (tm *TemplateRegistry) BuildSimpleHandler(templatePath string, fn TemplateHandler) http.HandlerFunc {
-	renderer := tm.buildRenderer(templatePath, nil)
+	base := tm.buildRenderer(templatePath, nil) // validates at startup; panics on field mismatch
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		renderer.Request = r
-		fn(w, r, renderer)
+		re := *base // copy per request to avoid data race on Request field
+		re.Request = r
+		fn(w, r, &re)
 	}
 }
 
 func (tm *TemplateRegistry) BuildHandler(templatePath string, exampleModel any, fn TemplateHandler) http.HandlerFunc {
-	renderer := tm.buildRenderer(templatePath, exampleModel)
+	base := tm.buildRenderer(templatePath, exampleModel) // validates at startup; panics on field mismatch
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		renderer.Request = r
-		fn(w, r, renderer)
+		re := *base // copy per request to avoid data race on Request field
+		re.Request = r
+		fn(w, r, &re)
 	}
 }
 
@@ -222,25 +224,21 @@ type TemplateRenderer struct {
 	Request          *http.Request
 }
 
-func (te *TemplateRenderer) String(data any) (string, error) {
-	var buffer bytes.Buffer
-	if err := te.WriteTo(&buffer, data); err != nil {
-		return "", err
-	}
-	return buffer.String(), nil
-}
-
-func (te *TemplateRenderer) WriteTo(writer io.Writer, data any) error {
+func (te *TemplateRenderer) WriteTo(writer http.ResponseWriter, data any) {
 	tmpl, err := te.registry.getTemplateToRender(te.templateName)
 	if err != nil {
-		return err
+		slog.Error("template not found", "template", te.templateName, "error", err)
+		http.Error(writer, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	// Clone and add request-scoped funcs if provider exists
 	if te.registry.options.RequestFuncsProvider != nil {
 		clonedTmpl, err := tmpl.Clone()
 		if err != nil {
-			return fmt.Errorf("cloning template: %w", err)
+			slog.Error("cloning template failed", "template", te.templateName, "error", err)
+			http.Error(writer, "Internal Server Error", http.StatusInternalServerError)
+			return
 		}
 		requestFuncs := te.registry.options.RequestFuncsProvider(te.Request)
 		clonedTmpl.Funcs(requestFuncs)
@@ -257,14 +255,15 @@ func (te *TemplateRenderer) WriteTo(writer io.Writer, data any) error {
 	var buff bytes.Buffer
 
 	if err := tmpl.ExecuteTemplate(&buff, execName, data); err != nil {
-		return fmt.Errorf("error executing template [%v]: %v", te.templateName, err.Error())
+		slog.Error("template execution failed", "template", te.templateName, "error", err)
+		http.Error(writer, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	if _, err := writer.Write(buff.Bytes()); err != nil {
-		return fmt.Errorf("error writing template [%v]: %v", te.templateName, err.Error())
+		slog.Error("template write failed", "template", te.templateName, "error", err)
+		return
 	}
-
-	return nil
 }
 
 // validateViewModelAllBlocks validates the data model against all blocks defined by the page template.

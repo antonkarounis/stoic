@@ -2,43 +2,60 @@ package db
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/antonkarounis/balance/internal/adapters/db/gen"
-	"github.com/antonkarounis/balance/internal/ports"
+	"github.com/antonkarounis/stoic/internal/adapters/db/gen"
+	"github.com/antonkarounis/stoic/internal/domain/models"
+	"github.com/antonkarounis/stoic/internal/domain/ports"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type UserRepository struct {
 	queries *gen.Queries
 }
 
+var _ ports.UserRepository = (*UserRepository)(nil)
+
 func NewUserRepository(q *gen.Queries) *UserRepository {
 	return &UserRepository{queries: q}
 }
 
-// GetUserByID implements [auth.UserRepository].
-func (s *UserRepository) GetUserByID(ctx context.Context, userId int64) (ports.User, error) {
-	user, err := s.queries.GetUserByID(ctx, userId)
-	if err != nil {
-		return ports.User{}, err
-	}
-	return ports.User{
-		AuthSub:     user.AuthSub,
-		ID:          user.ID,
+// Save implements [ports.UserRepository].
+func (r *UserRepository) Save(ctx context.Context, user models.User) error {
+	return r.queries.UpsertUser(ctx, gen.UpsertUserParams{
+		ID:          string(user.ID),
+		Name:        user.Name,
 		Email:       user.Email,
-		DisplayName: user.DisplayName,
+		Role:        string(user.Role),
+		CreatedAt:   pgtype.Timestamptz{Time: user.CreatedAt, Valid: true},
+	})
+}
+
+// FindByID implements [ports.UserRepository].
+func (r *UserRepository) FindByID(ctx context.Context, id models.UserID) (models.User, error) {
+	row, err := r.queries.GetUserByID(ctx, string(id))
+	if err != nil {
+		return models.User{}, mapErr(err)
+	}
+	return models.User{
+		ID:        models.UserID(row.ID),
+		Name:      row.Name,
+		Email:     row.Email,
+		Role:      models.Role(row.Role),
+		CreatedAt: row.CreatedAt.Time,
 	}, nil
 }
 
-// UpsertUser creates or updates a user record and returns the database ID.
-func (s *UserRepository) UpsertUser(ctx context.Context, authSub, email, displayName string) (int64, error) {
-	user, err := s.queries.UpsertUser(ctx, gen.UpsertUserParams{
-		AuthSub:     authSub,
-		Email:       email,
-		DisplayName: displayName,
-	})
+// FindByEmail implements [ports.UserRepository].
+func (r *UserRepository) FindByEmail(ctx context.Context, email string) (models.User, error) {
+	row, err := r.queries.GetUserByEmail(ctx, email)
 	if err != nil {
-		return 0, fmt.Errorf("upserting user: %w", err)
+		return models.User{}, mapErr(err)
 	}
-	return user.ID, nil
+	return models.User{
+		ID:        models.UserID(row.ID),
+		Name:      row.Name,
+		Email:     row.Email,
+		Role:      models.Role(row.Role),
+		CreatedAt: row.CreatedAt.Time,
+	}, nil
 }

@@ -4,31 +4,35 @@ import (
 	"html/template"
 	"net/http"
 
-	"github.com/antonkarounis/balance/internal/adapters/web/framework"
-	"github.com/antonkarounis/balance/internal/ports"
+	"github.com/antonkarounis/stoic/internal/adapters/web/framework"
+	"github.com/antonkarounis/stoic/internal/domain/models"
 )
 
 func loadTemplateFuncs(r *http.Request) template.FuncMap {
 	return template.FuncMap{
-		"isLoggedIn": loggedIn(r),
-		"session":    session(r),
+		"urlFor":      urlFor(r),
+		"isLoggedIn":  loggedIn(r),
+		"currentUser": currentUser(r),
+	}
+}
+
+func urlFor(r *http.Request) func(string) string {
+	return func(name string) string {
+		return framework.UrlFor(r, name)
 	}
 }
 
 func loggedIn(r *http.Request) func() bool {
 	return func() bool {
-		user := framework.GetOptionalSession(r)
-		return user != nil
+		return framework.GetLoggedInUser(r) != nil
 	}
 }
 
-func session(r *http.Request) func() ports.SessionData {
-	return func() ports.SessionData {
-		session, _ := framework.GetSessionFromContext(r)
-
-		if session != nil {
-			return *session
+func currentUser(r *http.Request) func() models.User {
+	return func() models.User {
+		if u := framework.GetLoggedInUser(r); u != nil {
+			return *u
 		}
-		return ports.SessionData{}
+		return models.User{}
 	}
 }
