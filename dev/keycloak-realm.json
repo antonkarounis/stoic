@@ -1,6 +1,7 @@
 {
   "realm": "dev",
   "enabled": true,
+  "loginTheme": "stoic",
   "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,

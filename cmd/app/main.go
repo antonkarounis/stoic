@@ -4,17 +4,19 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/antonkarounis/balance/internal/adapters/db"
-	"github.com/antonkarounis/balance/internal/adapters/db/gen"
-	views "github.com/antonkarounis/balance/internal/adapters/web"
-	"github.com/antonkarounis/balance/internal/ports"
+	"github.com/antonkarounis/stoic/internal/adapters/db"
+	"github.com/antonkarounis/stoic/internal/adapters/db/gen"
+	views "github.com/antonkarounis/stoic/internal/adapters/web"
+	"github.com/antonkarounis/stoic/internal/domain/models"
+	"github.com/antonkarounis/stoic/internal/domain/ports"
+	"github.com/antonkarounis/stoic/internal/domain/services"
 	"github.com/gorilla/mux"
 	"github.com/joho/godotenv"
 )
@@ -24,21 +26,25 @@ func main() {
 	defer cancel()
 
 	// G2: Load .env file if present (not required in container deployments)
-	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
-	}
+	_ = godotenv.Load()
 
+	// Load configurations
 	cfg := LoadConfig()
+
+	// Initialize structured logger before any other work
+	ConfigureLogging(cfg.Environment == "dev")
 
 	// Run migrations (using embedded SQL files, with advisory lock for safe multi-instance startup)
 	if err := db.Migrate(ctx, db.PlatformMigrations, "migrations", cfg.DatabaseURL); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+		slog.Error("failed to run migrations", "error", err)
+		os.Exit(1)
 	}
 
 	// Create connection pool
 	pool, err := db.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to create database pool: %v", err)
+		slog.Error("failed to create database pool", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
@@ -46,7 +52,17 @@ func main() {
 	queries := gen.New(pool)
 
 	sessionRepository := db.NewSessionRepository(ctx, queries)
+	identityRepository := db.NewIdentityRepository(queries)
+
 	userRepository := db.NewUserRepository(queries)
+	householdRepository := db.NewHouseholdRepository(queries)
+	inviteRepository := db.NewInviteRepository(ctx, queries)
+
+	transactor := db.NewTransactor(pool, queries)
+
+	userService := services.NewUserService(userRepository)
+	householdService := services.NewHouseholdService(userRepository, householdRepository, transactor)
+	inviteService := services.NewInviteService(userRepository, inviteRepository, noopEmailSender{}, transactor)
 
 	// Create auth config from infrastructure config
 	authCfg := &views.AuthConfig{
@@ -60,28 +76,46 @@ func main() {
 	}
 
 	// Initialize auth service (OIDC provider + DB access)
-	authService, err := views.NewAuthService(ctx, authCfg, sessionRepository, userRepository)
+	authService, err := views.NewAuthService(ctx, authCfg, sessionRepository, identityRepository)
 	if err != nil {
-		log.Fatalf("Failed to initialize auth: %v", err)
+		slog.Error("failed to initialize auth", "error", err)
+		os.Exit(1)
 	}
+
+	authService.SetFirstLoginHook(func(ctx context.Context, email, name string) (models.UserID, error) {
+		user, err := userService.Register(ctx, ports.RegisterInput{Email: email, Name: name})
+		if err != nil {
+			return "", err
+		}
+		return user.ID, nil
+	})
+
+	// Stub: sync email/name changes from OIDC provider on each subsequent login
+	authService.SetOnLoginHook(func(ctx context.Context, userID models.UserID, email, name string) error {
+		return nil
+	})
 
 	// Set up router and middleware
 	r := mux.NewRouter()
 
-	// Register application routes
-	views.RegisterRoutes(r, *authService)
+	isDev := cfg.Environment == "dev"
+	views.RegisterRoutes(r, *authService, userRepository, householdService, inviteService, pool, isDev)
 
-	// Start HTTP server
+	// Start HTTP server with timeouts
 	server := &http.Server{
-		Addr:    cfg.Addr,
-		Handler: r,
+		Addr:         cfg.Addr,
+		Handler:      r,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// A2: Graceful shutdown on SIGINT/SIGTERM
 	go func() {
-		log.Printf("Starting HTTP Server. Listening at %q", server.Addr)
+		slog.Info("starting HTTP server", "addr", server.Addr)
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			slog.Error("HTTP server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -89,16 +123,29 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	slog.Info("shutting down server")
 	cancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		slog.Error("server forced to shutdown", "error", err)
+		os.Exit(1)
 	}
-	log.Println("Server exited gracefully")
+	slog.Info("server exited gracefully")
+}
+
+func ConfigureLogging(isDev bool) {
+	logLevel := slog.LevelInfo
+	var logHandler slog.Handler
+	if isDev {
+		logLevel = slog.LevelDebug
+		logHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	} else {
+		logHandler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
+	}
+	slog.SetDefault(slog.New(logHandler))
 }
 
 func LoadConfig() *ports.Config {
@@ -137,4 +184,10 @@ func requireEnv(key string) string {
 		panic(fmt.Sprintf("required environment variable %s is not set", key))
 	}
 	return v
+}
+
+type noopEmailSender struct{}
+
+func (noopEmailSender) SendInvite(ctx context.Context, toEmail string, token string) error {
+	return nil
 }

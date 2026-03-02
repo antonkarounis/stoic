@@ -68,6 +68,7 @@ services:
       - "8180:8080"
     volumes:
       - ./keycloak-realm.json:/opt/keycloak/data/import/keycloak-realm.json:ro
+      - ./keycloak-themes:/opt/keycloak/themes:ro
     depends_on:
       postgres:
         condition: service_healthy
